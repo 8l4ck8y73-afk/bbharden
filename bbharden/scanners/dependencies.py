@@ -340,11 +340,18 @@ def _scan_osv(ctx) -> Iterator[Finding]:
     for pkg, vulns in results.items():
         eco, name, version = pkg
         file, line = packages[pkg]
+        fixes = [v.fixed_in for v in vulns if v.fixed_in]
+        keyed = [(osv_mod._vkey(f), f) for f in fixes if osv_mod._vkey(f) is not None]
+        best = max(keyed)[1] if keyed else None
+        n_fixed = sum(1 for v in vulns if v.fixed_in)
         for v in vulns:
             ident = v.cve or v.id
             fix = (f"Upgrade `{name}` to {v.fixed_in} or later."
                    if v.fixed_in else
                    f"Upgrade `{name}` to a release that fixes {ident}, or remove it.")
+            if best and len(vulns) > 1:
+                fix += (f" Upgrading to {best} or later resolves all {n_fixed} "
+                        f"advisories for this package that list a fix.")
             yield Finding(
                 rule_id="DEP_KNOWN_VULN",
                 title=f"Known vulnerability in {name} {version} ({ident})",

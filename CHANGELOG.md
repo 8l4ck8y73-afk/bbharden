@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.8.1 — OSV de-duplication (found by the first live `--osv` run)
+
+- First live run (django 4.2.1) returned 74 findings for one package: OSV lists the same flaw once per database (GHSA-…, PYSEC-…), so each CVE appeared 2-3 times, sometimes with different severities.
+- Advisories sharing any id/alias are now merged into one finding; a rating that is actually known beats a defaulted MEDIUM; the highest fixed version is used.
+- Each finding now also says which single upgrade resolves all advisories that list a fix.
+- Same merge applies to `sbom --osv`.
+
 ## 0.8.0 — more ecosystems for SBOM and `--osv`
 
 - Exact-version packages are now read from **go.mod**, **Cargo.lock** (registry crates only), **pom.xml** (literal versions; `${property}` and ranges skipped), **Gemfile.lock** and **composer.lock**, in addition to PyPI/npm. They feed both `sbom` and `--osv`.

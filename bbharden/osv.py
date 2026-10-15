@@ -34,6 +34,8 @@ class Vuln:
     aliases: List[str] = field(default_factory=list)
     severity: Severity = Severity.MEDIUM
     fixed_in: Optional[str] = None
+    # False when the record carried no rating and MEDIUM is only our default.
+    severity_known: bool = True
 
     @property
     def cve(self) -> Optional[str]:
@@ -71,11 +73,16 @@ def _get(url: str) -> dict:
 
 
 def severity_from_osv(vuln: dict) -> Severity:
-    """Map an OSV record to our Severity.
+    return _severity_or_none(vuln) or Severity.MEDIUM
+
+
+def _severity_or_none(vuln: dict) -> Optional[Severity]:
+    """Map an OSV record to our Severity, or None if the record has no rating.
 
     Prefers the GitHub-advisory `database_specific.severity` label (present for
     most ecosystems); falls back to a CVSS numeric score if one is present,
-    else MEDIUM so an unclassified known-vuln is never silently ignored.
+    else None (callers default to MEDIUM so an unclassified known-vuln is never
+    silently ignored).
     """
     label = (vuln.get("database_specific") or {}).get("severity")
     if isinstance(label, str):
@@ -98,7 +105,7 @@ def severity_from_osv(vuln: dict) -> Severity:
             if score >= 4.0:
                 return Severity.MEDIUM
             return Severity.LOW
-    return Severity.MEDIUM
+    return None
 
 
 _CVSS3_W = {
@@ -192,13 +199,49 @@ def _norm(name: str, ecosystem: str) -> str:
 
 def parse_vuln(record: dict, ecosystem: str, name: str,
                current: Optional[str] = None) -> Vuln:
+    sev = _severity_or_none(record)
     return Vuln(
+        severity_known=sev is not None,
         id=record.get("id", "UNKNOWN"),
         summary=(record.get("summary") or record.get("details") or "").strip()[:200],
         aliases=list(record.get("aliases") or []),
-        severity=severity_from_osv(record),
+        severity=sev or Severity.MEDIUM,
         fixed_in=fixed_version(record, ecosystem, name, current),
     )
+
+
+def merge(vulns: List[Vuln]) -> List[Vuln]:
+    """Collapse advisories describing the same flaw (GHSA-… / PYSEC-… / CVE-…).
+
+    OSV returns one record per database, so a single CVE shows up two or three
+    times; reporting each separately triples the noise and makes the same bug
+    appear with different severities. Records that share any id or alias are
+    merged; the rating that is actually known wins over a defaulted one.
+    """
+    groups: List[List[Vuln]] = []
+    for v in vulns:
+        ids = {v.id, *v.aliases}
+        hit = [g for g in groups if any(ids & ({x.id, *x.aliases}) for x in g)]
+        merged = [v]
+        for g in hit:
+            merged = g + merged
+            groups.remove(g)
+        groups.append(merged)
+    out: List[Vuln] = []
+    for g in groups:
+        ids = list(dict.fromkeys(i for x in g for i in [x.id, *x.aliases]))
+        primary = next((x for x in g if x.id.startswith("GHSA-")), g[0])
+        known = [x for x in g if x.severity_known]
+        pool = known or g
+        sev = max((x.severity for x in pool), key=lambda s: s.rank)
+        fixes = [x.fixed_in for x in g if x.fixed_in]
+        keyed = [f for f in fixes if _vkey(f) is not None]
+        fixed = max(keyed, key=_vkey) if keyed else (fixes[0] if fixes else None)
+        summaries = [x.summary for x in (primary, *g) if x.summary]
+        out.append(Vuln(id=primary.id, summary=summaries[0] if summaries else "",
+                        aliases=[i for i in ids if i != primary.id],
+                        severity=sev, fixed_in=fixed, severity_known=bool(known)))
+    return out
 
 
 def query(packages: Iterable[Package],
@@ -254,4 +297,4 @@ def query(packages: Iterable[Package],
                 if item.get("next_page_token"):
                     nxt[i] = item["next_page_token"]
             pending = nxt
-    return results
+    return {p: merge(v) for p, v in results.items()}
