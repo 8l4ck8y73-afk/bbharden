@@ -116,6 +116,14 @@ def _user_is_root(spec: str) -> bool:
     return user in ("root", "0")
 
 
+# Directory or file names that indicate a build/CI/test image rather than a
+# deployed service.
+_TOOLING_PATH = re.compile(
+    r"(?i)(^|/)(tests?|testing|ci|\.?devcontainer|builders?|build|tools?|scripts|e2e|fixtures?)/"
+    r"|(^|/)Dockerfile[.-](dev|test|tests|ci|build|builder)$"
+    r"|(^|/)(dev|test|ci|build)\.Dockerfile$")
+
+
 def scan(ctx) -> Iterator[Finding]:
     for path in _dockerfiles(ctx):
         name = ctx.rel(path)
@@ -202,13 +210,18 @@ def scan(ctx) -> Iterator[Finding]:
                 )
 
         if last_from_line and final_user_root:
+            tooling = bool(_TOOLING_PATH.search(name))
             yield Finding(
                 rule_id="DOCKER_RUNS_AS_ROOT",
-                title="Container runs as root",
-                severity=Severity.HIGH,
+                title="Container runs as root" + (" (build/test image)" if tooling else ""),
+                # Build, CI and test images are rarely deployed; root there is a
+                # smaller risk than in a service image, so rate it lower.
+                severity=Severity.MEDIUM if tooling else Severity.HIGH,
                 file=name, line=last_from_line,
                 message="The final stage has no non-root USER, so the container "
-                        "(and anything that breaks out of the app) runs as root.",
+                        "(and anything that breaks out of the app) runs as root."
+                        + (" Its location suggests a build/CI/test image; confirm it "
+                           "is never deployed." if tooling else ""),
                 remediation="Create and switch to an unprivileged user before the "
                             "entrypoint:\n    RUN useradd --system --uid 10001 app\n"
                             "    USER app",
