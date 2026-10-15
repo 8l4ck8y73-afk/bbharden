@@ -61,11 +61,15 @@ class TestOsvClient(unittest.TestCase):
         self.assertEqual(
             osv.severity_from_osv({"severity": [{"type": "CVSS_V3", "score": "9.8"}]}),
             Severity.CRITICAL)
-        # A CVSS *vector* string is not a number: must fall back, not crash.
+        # A CVSS v3 *vector* is evaluated to its base score (9.8 -> critical).
         self.assertEqual(
             osv.severity_from_osv(
                 {"severity": [{"type": "CVSS_V3",
                                "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"}]}),
+            Severity.CRITICAL)
+        # An unparseable vector must fall back, not crash.
+        self.assertEqual(
+            osv.severity_from_osv({"severity": [{"type": "CVSS_V4", "score": "CVSS:4.0/x"}]}),
             Severity.MEDIUM)
 
     def test_no_network_raises_unavailable(self):

@@ -37,7 +37,10 @@ def _run_scan(ctx: RepoContext, only, skip, baseline=None) -> List[Finding]:
         try:
             findings.extend(fn(ctx))
         except Exception as exc:  # noqa: BLE001 — one scanner must not kill the run
-            print(f"warning: scanner '{_name}' failed: {exc}", file=sys.stderr)
+            # Recorded, not just printed: a crashed scanner means "unknown", never
+            # "clean", so the CLI exits non-zero instead of letting a gate pass.
+            ctx.errors.append(f"scanner '{_name}' failed: {exc}")
+            print(f"error: scanner '{_name}' failed: {exc}", file=sys.stderr)
     findings, counts = suppress.apply(ctx, findings, baseline)
     if counts["inline"] or counts["baseline"]:
         # stderr, so machine-readable stdout stays clean.
@@ -53,8 +56,8 @@ def _threshold_hit(findings, fail_on: str) -> bool:
 
 def cmd_scan(args) -> int:
     root = Path(args.target).resolve()
-    if not root.exists():
-        print(f"error: target not found: {root}", file=sys.stderr)
+    if not root.is_dir():
+        print(f"error: target is not a directory: {root}", file=sys.stderr)
         return 2
     ctx = RepoContext(root=root, use_osv=args.osv, exclude=args.exclude,
                       security_email=_resolve_email(args),
@@ -88,6 +91,14 @@ def cmd_scan(args) -> int:
     else:
         print(rendered)
 
+    if ctx.errors:
+        print(f"error: {len(ctx.errors)} scanner(s) failed; the result is "
+              "incomplete.", file=sys.stderr)
+        return 2
+    if args.osv_required and ctx.osv_failed:
+        print("error: --osv-required was set but CVE lookup did not complete.",
+              file=sys.stderr)
+        return 2
     if args.fail_on and _threshold_hit(findings, args.fail_on):
         return 1
     return 0
@@ -95,6 +106,9 @@ def cmd_scan(args) -> int:
 
 def cmd_fix(args) -> int:
     root = Path(args.target).resolve()
+    if not root.is_dir():
+        print(f"error: target is not a directory: {root}", file=sys.stderr)
+        return 2
     ctx = RepoContext(root=root, exclude=args.exclude,
                       security_email=_resolve_email(args),
                       scan_tests=args.scan_tests)
@@ -116,10 +130,17 @@ def cmd_fix(args) -> int:
             print(f"note: could not pin {action}@{ref} in {r.path}: {why}",
                   file=sys.stderr)
 
+    refused = [(p, a) for p, a in actions if a.startswith("skipped")]
+    actions = [(p, a) for p, a in actions if not a.startswith("skipped")]
+    for path, why in refused:
+        print(f"warning: {path}: {why}", file=sys.stderr)
+
     pinned_total = sum(len(r.pinned) for r in pins)
     if not actions and not pinned_total:
         print("No machine-applicable fixes available.")
         # Signal "nothing to do" so CI can skip opening an empty PR.
+        if ctx.errors:
+            return 2
         return 0 if not args.require_changes else 3
 
     verb = "Planned" if args.dry_run else "Applied"
@@ -135,7 +156,7 @@ def cmd_fix(args) -> int:
                 print(f"      {action}@{ref} -> {sha[:12]}")
     if args.dry_run:
         print("\n(dry run — nothing was written; re-run without --dry-run to apply)")
-    return 0
+    return 2 if ctx.errors else 0
 
 
 def _fix_summary_md(actions, findings, pins=()) -> str:
@@ -211,6 +232,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--osv", action="store_true",
                    help="match pinned dependencies against OSV.dev for known CVEs "
                         "(needs network; sends package names+versions only)")
+    s.add_argument("--osv-required", action="store_true",
+                   help="with --osv: exit 2 if the CVE lookup could not complete "
+                        "(default: continue and print a note)")
     s.add_argument("--write-baseline", metavar="FILE",
                    help="record today's findings as accepted and exit 0; later "
                         "runs with --baseline FILE then fail only on NEW findings")

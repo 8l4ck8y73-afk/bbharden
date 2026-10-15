@@ -16,9 +16,46 @@ from typing import Iterator
 
 from ..findings import Finding, Severity
 
-_REQ_PINNED = re.compile(r"^[A-Za-z0-9_.\-]+\s*==\s*\S+")
-_REQ_UNPINNED = re.compile(r"^[A-Za-z0-9_.\-]+\s*(>=|<=|~=|>|<|\*|$)")
-_REQ_NAME = re.compile(r"^[A-Za-z0-9_.\-]+")
+# name[extras] <spec> [; marker]
+_REQ_LINE = re.compile(
+    r"^(?P<name>[A-Za-z0-9][A-Za-z0-9_.\-]*)\s*(?:\[[^\]]*\])?\s*(?P<spec>[^;]*?)\s*(?:;.*)?$")
+# A single exact pin: `==1.2.3` / `===1.2.3`. `==1.*` (wildcard) is NOT exact.
+_EXACT_SPEC = re.compile(r"^===?\s*(?P<ver>[A-Za-z0-9_.+!\-]+)$")
+_NPM_EXACT = re.compile(r"^=?v?\d+\.\d+\.\d+([\-+][0-9A-Za-z.\-+]+)?$")
+# Specs that are not registry versions at all (handled elsewhere / intentionally).
+_NPM_NON_REGISTRY = re.compile(
+    r"^(file:|link:|git\+|git:|github:|https?:|workspace:|npm:|portal:|patch:)"
+    r"|^[\w.\-]+/[\w.\-]+(#.*)?$")
+
+
+def _pep503(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def _parse_requirement(raw: str):
+    """Return (name, exact_version_or_None) for one requirements.txt line.
+
+    None for blank/comment/option lines and for direct URL references.
+    """
+    line = raw.split(" #", 1)[0].split("\t#", 1)[0].strip().rstrip("\\").strip()
+    if not line or line.startswith(("#", "-")) or "@" in line or "://" in line:
+        return None
+    m = _REQ_LINE.match(line)
+    if not m:
+        return None
+    spec = m.group("spec").strip()
+    em = _EXACT_SPEC.match(spec)
+    return m.group("name"), (em.group("ver") if em else None)
+
+
+def _requirement_files(ctx):
+    seen, out = set(), []
+    for pat in ("**/requirements*.txt", "**/requirements/*.txt"):
+        for p in ctx.glob(pat):
+            if p not in seen:
+                seen.add(p)
+                out.append(p)
+    return out
 
 
 def _scan_requirements(ctx, path) -> Iterator[Finding]:
@@ -27,44 +64,54 @@ def _scan_requirements(ctx, path) -> Iterator[Finding]:
     if not text:
         return
     for i, raw in enumerate(text.splitlines(), start=1):
-        line = raw.strip()
-        if not line or line.startswith("#") or line.startswith("-"):
+        parsed = _parse_requirement(raw)
+        if not parsed:
             continue
-        if "==" in line or "@" in line:
-            continue
-        if _REQ_UNPINNED.match(line):
+        pkg, exact = parsed
+        if exact is None:
             yield Finding(
                 rule_id="DEP_UNPINNED_PY",
                 title="Unpinned Python dependency",
                 severity=Severity.LOW,
                 file=name, line=i,
-                message=f"`{_REQ_NAME.match(line).group(0)}` is not pinned to an "
-                        "exact version, so builds are not reproducible and a bad "
-                        "upstream release lands automatically.",
+                message=f"`{pkg}` is not pinned to an exact version, so builds are "
+                        "not reproducible and a bad upstream release lands "
+                        "automatically.",
                 remediation="Pin to an exact version (==) and manage upgrades with a "
                             "lockfile or Dependabot/Renovate.",
-                evidence=line[:120], cwe="CWE-1104",
+                evidence=raw.strip()[:120], cwe="CWE-1104",
             )
+
+
+def _load_json(ctx, path):
+    text = ctx.read_text(path)
+    if not text:
+        return None
+    try:
+        data = json.loads(text)
+    except (ValueError, TypeError, RecursionError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _npm_is_unpinned(spec: str) -> bool:
+    s = spec.strip()
+    if not s or _NPM_NON_REGISTRY.match(s):
+        return False
+    return not _NPM_EXACT.match(s)
 
 
 def _scan_package_json(ctx, path) -> Iterator[Finding]:
     name = ctx.rel(path)
-    text = ctx.read_text(path)
-    if not text:
+    data = _load_json(ctx, path)
+    if data is None:
         return
-    try:
-        data = json.loads(text)
-    except (ValueError, TypeError):
-        return
-    for section in ("dependencies", "devDependencies"):
+    for section in ("dependencies", "devDependencies", "optionalDependencies"):
         deps = data.get(section) or {}
         if not isinstance(deps, dict):
             continue
         for dep, spec in deps.items():
-            if not isinstance(spec, str):
-                continue
-            s = spec.strip()
-            if s.startswith(("^", "~", "*", ">", "<")) or s in ("latest", "*"):
+            if isinstance(spec, str) and _npm_is_unpinned(spec):
                 yield Finding(
                     rule_id="DEP_UNPINNED_NPM",
                     title="Unpinned npm dependency",
@@ -94,38 +141,82 @@ def _scan_package_json(ctx, path) -> Iterator[Finding]:
                 )
 
 
-_PIN_EXACT = re.compile(r"^([A-Za-z0-9_.\-]+)(?:\[[^\]]*\])?\s*==\s*([A-Za-z0-9_.\-+!]+)")
-_NPM_EXACT = re.compile(r"^\d+\.\d+\.\d+([\-+][0-9A-Za-z.\-+]+)?$")
-
-
 def _collect_packages(ctx):
     """Exact-version packages we can match against OSV.
 
     Returns {(ecosystem, name, version): (file, line)} using the first location.
-    Ranges (>=, ^, ~) are skipped on purpose: OSV needs a concrete version, and
-    guessing one would produce wrong CVE claims.
+    Ranges (>=, ^, ~, ==1.*) are skipped on purpose: OSV needs a concrete
+    version, and guessing one would produce wrong CVE claims.
+
+    Sources: requirements*.txt and package.json (direct pins), plus lockfiles —
+    package-lock.json, Pipfile.lock, poetry.lock — which expose the TRANSITIVE
+    dependencies that actually ship.
     """
     found = {}
-    for p in ctx.glob("**/requirements*.txt"):
+    for p in _requirement_files(ctx):
         text = ctx.read_text(p) or ""
         for i, raw in enumerate(text.splitlines(), start=1):
-            line = raw.split("#", 1)[0].strip()
-            m = _PIN_EXACT.match(line)
-            if m:
-                found.setdefault(("PyPI", m.group(1), m.group(2)), (ctx.rel(p), i))
+            parsed = _parse_requirement(raw)
+            if parsed and parsed[1] and not parsed[1].endswith("."):
+                found.setdefault(("PyPI", _pep503(parsed[0]), parsed[1]),
+                                 (ctx.rel(p), i))
+
     for p in ctx.glob("**/package.json"):
-        text = ctx.read_text(p)
-        try:
-            data = json.loads(text) if text else {}
-        except ValueError:
+        data = _load_json(ctx, p)
+        if not data:
             continue
-        for section in ("dependencies", "devDependencies"):
+        for section in ("dependencies", "devDependencies", "optionalDependencies"):
             deps = data.get(section) or {}
             if not isinstance(deps, dict):
                 continue
             for dep, spec in deps.items():
                 if isinstance(spec, str) and _NPM_EXACT.match(spec.strip()):
-                    found.setdefault(("npm", dep, spec.strip()), (ctx.rel(p), 1))
+                    found.setdefault(("npm", dep, spec.strip().lstrip("=v")),
+                                     (ctx.rel(p), 1))
+
+    for p in ctx.glob("**/package-lock.json"):
+        data = _load_json(ctx, p)
+        pk = (data or {}).get("packages")
+        if isinstance(pk, dict):                       # lockfileVersion 2/3
+            for key, meta in pk.items():
+                if not key or not isinstance(meta, dict) or meta.get("link"):
+                    continue
+                name = meta.get("name") or key.rsplit("node_modules/", 1)[-1]
+                ver = meta.get("version")
+                if isinstance(ver, str) and _NPM_EXACT.match(ver):
+                    found.setdefault(("npm", name, ver), (ctx.rel(p), 1))
+        elif isinstance((data or {}).get("dependencies"), dict):   # v1
+            stack = [(data["dependencies"])]
+            while stack:
+                for name, meta in stack.pop().items():
+                    if not isinstance(meta, dict):
+                        continue
+                    ver = meta.get("version")
+                    if isinstance(ver, str) and _NPM_EXACT.match(ver):
+                        found.setdefault(("npm", name, ver), (ctx.rel(p), 1))
+                    if isinstance(meta.get("dependencies"), dict):
+                        stack.append(meta["dependencies"])
+
+    for p in ctx.glob("**/Pipfile.lock"):
+        data = _load_json(ctx, p) or {}
+        for section in ("default", "develop"):
+            sec = data.get(section)
+            if not isinstance(sec, dict):
+                continue
+            for name, meta in sec.items():
+                ver = meta.get("version", "") if isinstance(meta, dict) else ""
+                if isinstance(ver, str) and ver.startswith("=="):
+                    found.setdefault(("PyPI", _pep503(name), ver[2:]),
+                                     (ctx.rel(p), 1))
+
+    for p in ctx.glob("**/poetry.lock"):
+        text = ctx.read_text(p) or ""
+        for block in text.split("[[package]]")[1:]:
+            nm = re.search(r'^name\s*=\s*"([^"]+)"', block, re.M)
+            vr = re.search(r'^version\s*=\s*"([^"]+)"', block, re.M)
+            if nm and vr:
+                found.setdefault(("PyPI", _pep503(nm.group(1)), vr.group(1)),
+                                 (ctx.rel(p), 1))
     return found
 
 
@@ -139,6 +230,7 @@ def _scan_osv(ctx) -> Iterator[Finding]:
     try:
         results = lookup(list(packages))
     except osv_mod.OSVUnavailable as exc:
+        ctx.osv_failed = True
         ctx.notes.append(
             f"OSV lookup skipped (could not reach api.osv.dev: {exc}). "
             "Known-CVE matching did not run."
@@ -167,7 +259,7 @@ def _scan_osv(ctx) -> Iterator[Finding]:
 
 
 def scan(ctx) -> Iterator[Finding]:
-    for p in ctx.glob("**/requirements*.txt"):
+    for p in _requirement_files(ctx):
         yield from _scan_requirements(ctx, p)
     for p in ctx.glob("**/package.json"):
         yield from _scan_package_json(ctx, p)

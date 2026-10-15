@@ -26,10 +26,13 @@ from typing import Callable, Dict, List, Optional, Tuple
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 # `uses: owner/repo[/subpath]@ref  [# comment]`
 _USES = re.compile(
-    r"^(?P<prefix>\s*-?\s*uses:\s*)"
-    r"(?P<action>[A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+)(?P<sub>/[^@\s]+)?"
-    r"@(?P<ref>[^\s#]+)(?P<rest>.*)$"
+    r"^(?P<prefix>\s*-?\s*uses:\s*)(?P<q>[\"']?)"
+    r"(?P<action>[A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+)(?P<sub>/[^@\s\"']+)?"
+    r"@(?P<ref>[^\s#\"']+)(?P=q)(?P<rest>.*)$"
 )
+# Only plain git ref names are looked up; anything templated (`${{ ... }}`) or
+# glob-like is reported instead of being sent to `git ls-remote` as a pattern.
+_SAFE_REF = re.compile(r"^[A-Za-z0-9._/\-]+$")
 
 # (url, patterns) -> list of "sha<TAB>refname" lines
 LsRemote = Callable[[str, List[str]], List[str]]
@@ -91,15 +94,22 @@ def pin_text(text: str, resolve: Callable[[str, str], Optional[str]]
     skipped: List[Tuple[str, str, str]] = []
     cache: Dict[Tuple[str, str], Optional[str]] = {}
     out: List[str] = []
-    for raw in text.split("\n"):
+    for full in text.split("\n"):
+        # Keep the line ending out of the regex so CRLF files stay CRLF.
+        cr = "\r" if full.endswith("\r") else ""
+        raw = full[:-1] if cr else full
         m = _USES.match(raw)
         if not m or raw.lstrip().startswith("#"):
-            out.append(raw)
+            out.append(full)
             continue
         action = m.group("action") + (m.group("sub") or "")
         repo, ref, rest = m.group("action"), m.group("ref"), m.group("rest")
         if _SHA.match(ref):
-            out.append(raw)             # already pinned
+            out.append(full)            # already pinned
+            continue
+        if not _SAFE_REF.match(ref):
+            skipped.append((action, ref, "templated or unsupported ref"))
+            out.append(full)
             continue
         key = (repo, ref)
         if key not in cache:
@@ -108,15 +118,16 @@ def pin_text(text: str, resolve: Callable[[str, str], Optional[str]]
             except OSError as exc:
                 cache[key] = None
                 skipped.append((action, ref, f"lookup failed: {exc}"))
-                out.append(raw)
+                out.append(full)
                 continue
         sha = cache[key]
         if not sha:
             skipped.append((action, ref, "ref not found on the remote"))
-            out.append(raw)
+            out.append(full)
             continue
         comment = rest if rest.strip() else f"  # {ref}"
-        out.append(f"{m.group('prefix')}{action}@{sha}{comment}")
+        q = m.group("q")
+        out.append(f"{m.group('prefix')}{q}{action}@{sha}{q}{comment}{cr}")
         pinned.append((action, ref, sha))
     return "\n".join(out), pinned, skipped
 
@@ -125,17 +136,29 @@ def pin_workflows(ctx, dry_run: bool = False,
                   resolve: Callable[[str, str], Optional[str]] = resolve_sha
                   ) -> List[PinResult]:
     """Pin every workflow under .github/workflows (honouring --exclude)."""
+    from .remediate import safe_write, unsafe_reason
+
     results: List[PinResult] = []
     wf_dir = ctx.root / ".github" / "workflows"
-    if not wf_dir.is_dir():
+    if not wf_dir.is_dir() or wf_dir.is_symlink():
         return results
     for path in sorted(wf_dir.iterdir()):
         if path.suffix.lower() not in (".yml", ".yaml") or ctx.is_excluded(path):
             continue
-        text = path.read_text(encoding="utf-8")
+        if not ctx.is_regular(path):          # symlink / FIFO: never touch
+            continue
+        rel = ctx.rel(path)
+        # newline="" keeps CRLF exactly as found.
+        with open(path, encoding="utf-8", newline="") as fh:
+            text = fh.read()
         new, pinned, skipped = pin_text(text, resolve)
         if pinned and not dry_run:
-            path.write_text(new, encoding="utf-8")
+            why = unsafe_reason(ctx.root, rel)
+            if why:
+                skipped.append((rel, "-", f"not written: {why}"))
+                pinned = []
+            else:
+                safe_write(ctx.root, rel, new)
         if pinned or skipped:
-            results.append(PinResult(ctx.rel(path), pinned, skipped))
+            results.append(PinResult(rel, pinned, skipped))
     return results

@@ -22,7 +22,8 @@ import hashlib
 import json
 import re
 from pathlib import Path
-from typing import Dict, Iterable, List, Set, Tuple
+from collections import Counter
+from typing import Dict, Iterable, List, Tuple
 
 from .findings import Finding
 
@@ -36,7 +37,7 @@ def fingerprint(f: Finding) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
 
-def load_baseline(path: str) -> Set[str]:
+def load_baseline(path: str) -> Counter:
     try:
         data = json.loads(Path(path).read_text(encoding="utf-8"))
     except FileNotFoundError:
@@ -45,11 +46,16 @@ def load_baseline(path: str) -> Set[str]:
         raise SystemExit(f"error: unreadable baseline {path}: {exc}")
     if not isinstance(data, dict) or data.get("version") != BASELINE_VERSION:
         raise SystemExit(f"error: {path} is not a v{BASELINE_VERSION} bbharden baseline")
-    return set(data.get("fingerprints") or [])
+    fps = data.get("fingerprints") or []
+    if not isinstance(fps, list) or not all(isinstance(x, str) for x in fps):
+        raise SystemExit(f"error: {path} has a malformed fingerprints list")
+    # A Counter, not a set: if the same secret is baselined once and a *second*
+    # copy later appears in the same file, the second copy is still new.
+    return Counter(fps)
 
 
 def write_baseline(path: str, findings: Iterable[Finding]) -> int:
-    fps = sorted({fingerprint(f) for f in findings})
+    fps = sorted(fingerprint(f) for f in findings)
     Path(path).write_text(
         json.dumps({"version": BASELINE_VERSION, "fingerprints": fps}, indent=2) + "\n",
         encoding="utf-8",
@@ -76,14 +82,17 @@ def _inline_ignored(lines: List[str], lineno: int, rule_id: str) -> bool:
     return False
 
 
-def apply(ctx, findings: List[Finding], baseline: Set[str] | None = None
+def apply(ctx, findings: List[Finding], baseline: Counter | None = None
           ) -> Tuple[List[Finding], Dict[str, int]]:
     """Drop suppressed findings. Returns (kept, {"inline": n, "baseline": n})."""
     kept: List[Finding] = []
     counts = {"inline": 0, "baseline": 0}
     cache: Dict[str, List[str]] = {}
+    remaining = Counter(baseline) if baseline else Counter()
     for f in findings:
-        if baseline and fingerprint(f) in baseline:
+        fp = fingerprint(f)
+        if remaining[fp] > 0:
+            remaining[fp] -= 1
             counts["baseline"] += 1
             continue
         if f.file not in cache:
