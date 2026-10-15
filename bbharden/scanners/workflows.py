@@ -24,7 +24,7 @@ def _workflow_files(ctx):
         d = ctx.root / sub
         if d.is_dir():
             for p in d.iterdir():
-                if p.suffix.lower() in (".yml", ".yaml"):
+                if p.suffix.lower() in (".yml", ".yaml") and not ctx.is_excluded(p):
                     yield p
 
 

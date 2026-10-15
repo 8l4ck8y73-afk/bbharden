@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fnmatch
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -28,6 +29,15 @@ _MAX_BYTES = 2_000_000  # skip files larger than ~2MB for text scanning
 class RepoContext:
     root: Path
     max_bytes: int = _MAX_BYTES
+    # Opt-in: query OSV.dev for known CVEs (sends package names+versions only).
+    use_osv: bool = False
+    # Injectable lookup (tests); None means "use bbharden.osv.query".
+    osv_query: object = None
+    # Non-fatal notes surfaced to the user (e.g. "OSV unreachable").
+    notes: list = field(default_factory=list)
+    # Glob patterns (relative to root, '/'-separated) to leave out of every scan.
+    # A bare directory name such as "examples" excludes everything beneath it.
+    exclude: list = field(default_factory=list)
     _text_cache: dict = field(default_factory=dict)
 
     def rel(self, path: Path) -> str:
@@ -36,11 +46,25 @@ class RepoContext:
         except ValueError:
             return str(path)
 
+    def is_excluded(self, path: Path) -> bool:
+        if not self.exclude:
+            return False
+        rel = self.rel(path).replace(os.sep, "/")
+        for pat in self.exclude:
+            pat = pat.strip().replace(os.sep, "/").lstrip("./")
+            if not pat:
+                continue
+            if fnmatch.fnmatch(rel, pat) or rel.startswith(pat.rstrip("/") + "/"):
+                return True
+        return False
+
     def walk(self) -> Iterator[Path]:
         for dirpath, dirnames, filenames in os.walk(self.root):
             dirnames[:] = [d for d in dirnames if d not in _IGNORE_DIRS]
             for fn in filenames:
-                yield Path(dirpath) / fn
+                p = Path(dirpath) / fn
+                if not self.is_excluded(p):
+                    yield p
 
     def text_files(self) -> Iterator[Path]:
         for p in self.walk():
@@ -77,4 +101,5 @@ class RepoContext:
         return [
             p for p in self.root.glob(pattern)
             if not any(part in _IGNORE_DIRS for part in p.parts)
+            and not self.is_excluded(p)
         ]

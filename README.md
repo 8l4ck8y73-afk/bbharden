@@ -79,12 +79,39 @@ Summary: 🟥 2 critical  🟧 6 high  🟨 4 medium  🟦 4 low  ⬜ 1 info
 | **dependencies** | unpinned pip / npm versions, npm install-time lifecycle scripts |
 | **security-files** | missing `SECURITY.md`, missing Dependabot, committed `.env`, weak `.gitignore` — **all auto-fixable** |
 
-Run a subset:
+Run a subset, or leave paths out (repeatable; a bare directory name excludes
+everything beneath it):
 
 ```bash
 bbharden scan . --only secrets dockerfile
 bbharden scan . --skip dependencies
+bbharden scan . --exclude examples --exclude 'docs/*.md'
 ```
+
+## 🧬 Known-CVE matching (`--osv`)
+
+Turn "unpinned dependency" into "this exact version has CVE-XXXX":
+
+```bash
+bbharden scan . --osv
+```
+
+```
+🟧 HIGH     DEP_KNOWN_VULN
+   Known vulnerability in demo-lib 2.0.0 (CVE-2099-0001)
+   requirements.txt:1
+   → Upgrade `demo-lib` to 2.5.1 or later.
+```
+
+- **Opt-in**, because it needs network access to [OSV.dev](https://osv.dev).
+- **Privacy:** only package names and versions are sent — never source code,
+  file paths or repository names.
+- **No guessing:** only exact pins (`==1.2.3`, `"1.2.3"`) are matched. Ranges like
+  `>=1.0` or `^1.2` are reported as unpinned instead of being matched to a
+  made-up version.
+- **Fails soft:** if OSV is unreachable the scan completes normally and prints a
+  note to stderr (so SARIF/JSON on stdout stays valid).
+- Covers PyPI (`requirements*.txt`) and npm (`package.json`) today.
 
 ## 🔧 Auto-fix
 
@@ -119,6 +146,43 @@ jobs:
 Findings appear in **Security → Code scanning** via SARIF, and the job fails if
 anything at or above your threshold is found.
 
+## 🔁 Auto-hardening pull requests
+
+Let BlackByte Hardener open a PR with the fixes it can apply safely — the same
+pattern as Dependabot. Add `.github/workflows/auto-harden.yml`:
+
+```yaml
+name: Auto-Harden
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "23 7 * * 1"
+permissions:
+  contents: write
+  pull-requests: write
+jobs:
+  auto-harden:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          python3 -m bbharden.cli fix . \
+            --summary "$RUNNER_TEMP/pr-body.md" --require-changes || \
+            [ $? -eq 3 ] && echo "nothing to fix"
+      - uses: peter-evans/create-pull-request@v6
+        with:
+          branch: bbharden/auto-harden
+          title: "🛡️ Automated hardening fixes"
+          body-path: ${{ runner.temp }}/pr-body.md
+          commit-message: "chore(security): apply automated hardening fixes"
+          labels: security, automated
+```
+
+Only machine-safe fixes are applied (missing `SECURITY.md`, Dependabot config,
+`.gitignore` hardening). Findings that need human judgment — secrets to rotate,
+Dockerfile and CI changes — are reported but never auto-committed. If there is
+nothing to fix, no PR is opened. The ready-to-use workflow ships in this repo.
+
 ## 📤 Output formats
 
 ```bash
@@ -136,8 +200,9 @@ bbharden scan . --fail-on high   # exit code 1 if high+ findings exist
 
 ## Roadmap
 
-- [ ] Live CVE matching via optional `osv-scanner` / `pip-audit` hook
-- [ ] Auto-open hardening PRs (GitHub App)
+- [x] Auto-open hardening PRs (GitHub Action)
+- [x] Live CVE matching via OSV.dev (`--osv`)
+- [ ] Lockfile support (`package-lock.json`, `poetry.lock`, `Pipfile.lock`) for transitive CVEs
 - [ ] Terraform / Kubernetes manifest hardening
 - [ ] Custom rule packs (`.bbharden.yml`)
 - [ ] Baseline file to suppress accepted findings

@@ -78,5 +78,34 @@ class TestAutofix(unittest.TestCase):
         self.assertIn("SECURITY.md", paths)
 
 
+class TestDockerfileDetection(unittest.TestCase):
+    def test_source_files_named_dockerfile_dot_ext_are_not_dockerfiles(self):
+        from bbharden.scanners.dockerfile import _is_dockerfile
+        for name in ("Dockerfile", "dockerfile", "Dockerfile.prod",
+                     "Dockerfile.dev", "app.dockerfile"):
+            self.assertTrue(_is_dockerfile(name), name)
+        for name in ("dockerfile.py", "Dockerfile.md", "dockerfile.js",
+                     "dockerfile.txt", "dockerfile.yml"):
+            self.assertFalse(_is_dockerfile(name), name)
+
+
+class TestExclude(unittest.TestCase):
+    def test_exclude_directory_and_glob(self):
+        base = RepoContext(root=EXAMPLE)
+        self.assertTrue(list(dockerfile.scan(base)))  # findings without exclude
+        self.assertTrue(RepoContext(root=ROOT, exclude=["examples"]).is_excluded(
+            EXAMPLE / "Dockerfile"))
+        self.assertTrue(RepoContext(root=ROOT, exclude=["examples/*"]).is_excluded(
+            EXAMPLE / "Dockerfile"))
+        self.assertFalse(RepoContext(root=ROOT, exclude=["examples"]).is_excluded(
+            ROOT / "README.md"))
+
+    def test_excluded_paths_produce_no_findings(self):
+        ctx = RepoContext(root=ROOT, exclude=["examples"])
+        files = {ctx.rel(p) for p in ctx.walk()}
+        self.assertFalse(any(f.startswith("examples") for f in files))
+        self.assertEqual(list(dockerfile.scan(ctx)), [])
+
+
 if __name__ == "__main__":
     unittest.main()

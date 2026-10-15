@@ -9,5 +9,5 @@ suggests remediations. It never attacks, exploits, or contacts third-party
 systems.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.3.0"
 __all__ = ["__version__"]
