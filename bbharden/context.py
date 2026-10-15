@@ -40,6 +40,9 @@ class RepoContext:
     exclude: list = field(default_factory=list)
     # Real contact address for a generated SECURITY.md (never invented).
     security_email: object = None
+    # By default the secrets scanner skips test/fixture/example paths (they hold
+    # fake credentials); set True to scan them too.
+    scan_tests: bool = False
     _text_cache: dict = field(default_factory=dict)
 
     def rel(self, path: Path) -> str:

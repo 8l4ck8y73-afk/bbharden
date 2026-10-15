@@ -28,13 +28,21 @@ one step further and **generates the fix** — a ready-to-commit `SECURITY.md`, 
 `dependabot.yml`, a hardened `.gitignore` — and emits **SARIF** so findings show
 up natively in GitHub's Security tab.
 
-| | Legacy linters | Secret scanners | **BlackByte Hardener** |
-|---|:---:|:---:|:---:|
-| Secrets detection | ❌ | ✅ | ✅ |
-| Dockerfile / CI hardening | partial | ❌ | ✅ |
-| **Writes the fix for you** | ❌ | ❌ | ✅ |
-| SARIF → GitHub Security tab | some | some | ✅ |
-| Runtime dependencies | many | many | **none** |
+### Honest positioning
+
+BlackByte Hardener is **not** a replacement for the specialists. Use them too:
+
+| Need | Best tool | Where bbharden fits |
+|---|---|---|
+| Deep secret detection, git **history**, live key verification | gitleaks, TruffleHog | bbharden scans the working tree only and does not verify keys — it is a cheap first pass |
+| Broad code SAST (hundreds of languages/rules) | Semgrep, CodeQL | out of scope |
+| Container / IaC / OS-package CVEs | Trivy, Grype | bbharden covers Dockerfile *hygiene* and pinned PyPI/npm CVEs via OSV |
+| Repo-level supply-chain scoring | OpenSSF Scorecard | complementary |
+
+Where bbharden is different: **zero dependencies** (one `git clone`, no Go
+binary, no Docker pull), **it writes the fix** (`SECURITY.md`, Dependabot,
+`.gitignore`, SHA-pinned Actions) and can open the hardening PR for you, and it
+covers repo-hygiene + CI + Docker + secrets in one pass with SARIF output.
 
 ## 🚀 Quick start
 
@@ -74,8 +82,8 @@ Summary: 🟥 2 critical  🟧 6 high  🟨 4 medium  🟦 4 low  ⬜ 1 info
 | Scanner | Examples of what it catches |
 |---|---|
 | **secrets** | AWS keys, private keys, GitHub/Slack/Stripe tokens, hardcoded high-entropy credentials (evidence is always redacted) |
-| **dockerfile** | runs as root, `:latest` base image, secrets in `ENV`, `curl \| bash`, `ADD <url>` |
-| **workflows** | `pull_request_target` + checkout, script injection via `${{ github.event.* }}`, actions not pinned to a SHA |
+| **dockerfile** | runs as root, unpinned / `:latest` base image (understands `scratch`, multi-stage aliases, `ARG` defaults and digests), secrets in `ENV`, `curl \| bash`, `ADD <url>` |
+| **workflows** | `pull_request_target` + checkout, script injection via `${{ github.event.* }}`, actions not pinned to a SHA, workflow with no `permissions:` block |
 | **dependencies** | unpinned pip / npm versions, npm install-time lifecycle scripts |
 | **security-files** | missing `SECURITY.md`, missing Dependabot, committed `.env`, weak `.gitignore` — **all auto-fixable** |
 
@@ -87,6 +95,28 @@ bbharden scan . --only secrets dockerfile
 bbharden scan . --skip dependencies
 bbharden scan . --exclude examples --exclude 'docs/*.md'
 ```
+
+Test, fixture and example paths are skipped by the secrets scanner (they usually
+hold fake keys); add `--scan-tests` to include them.
+
+## 🙈 Suppressions & baselines
+
+Adopt it on an existing repo without day-one noise, and still fail on anything new:
+
+```bash
+bbharden scan . --write-baseline .bbharden-baseline.json   # accept today's findings
+bbharden scan . --baseline .bbharden-baseline.json --fail-on high   # fail only on NEW ones
+```
+
+Fingerprints ignore line numbers, so editing code above a finding doesn't revive it.
+For one-off exceptions, comment the line (any comment style):
+
+```python
+legacy = "..."  # bbharden:ignore SECRET_GENERIC_ASSIGN
+# bbharden:ignore-next-line DOCKER_RUNS_AS_ROOT
+```
+
+No rule id after the marker means "all rules on that line".
 
 ## 🧬 Known-CVE matching (`--osv`)
 
@@ -122,6 +152,18 @@ bbharden fix .             # write the fixes
 
 This creates the missing hygiene files directly. Pair it with a bot step in CI
 to open a hardening pull request automatically.
+
+### Pin Actions to commit SHAs
+
+```bash
+bbharden fix . --pin-actions --only workflows
+```
+
+Rewrites `uses: actions/checkout@v4` to `uses: actions/checkout@<sha>  # v4`.
+SHAs are resolved read-only with `git ls-remote` against the action's public repo
+(annotated tags are peeled to the real commit). Anything that can't be resolved is
+left untouched and reported — it never guesses. Note: the default `GITHUB_TOKEN`
+cannot push workflow-file changes, so run this locally or give the auto-PR a PAT.
 
 `SECURITY.md` needs a real contact address, and `bbharden` will never invent one:
 
@@ -215,7 +257,8 @@ bbharden scan . --fail-on high   # exit code 1 if high+ findings exist
 - [ ] Lockfile support (`package-lock.json`, `poetry.lock`, `Pipfile.lock`) for transitive CVEs
 - [ ] Terraform / Kubernetes manifest hardening
 - [ ] Custom rule packs (`.bbharden.yml`)
-- [ ] Baseline file to suppress accepted findings
+- [x] Baseline file and inline suppressions
+- [x] SHA-pin GitHub Actions (`fix --pin-actions`)
 
 ## License
 
