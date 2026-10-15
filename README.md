@@ -4,13 +4,16 @@
 
 ### Find the security holes in your repo — and get the fix, not just the finding.
 
-`bbharden` is a **defensive** security scanner that reviews a codebase for
-committed secrets, insecure Dockerfiles, risky CI workflows and dependency
-hygiene problems — then writes the remediation for you.
+`bbharden` is a **defensive** security scanner for repositories. It finds committed
+secrets (also in git history), insecure Dockerfiles / Kubernetes / Compose / Terraform,
+risky CI workflows and vulnerable dependencies — then **writes the remediation** and
+produces audit-ready output: SARIF, a client-ready HTML report and a CycloneDX SBOM.
 
-**Zero dependencies. One Python file to run. Works offline and in any CI.**
+**Zero dependencies. Python 3.9+ standard library only. Works offline and in any CI.**
 
-[Quick start](#-quick-start) · [What it checks](#-what-it-checks) · [GitHub Action](#-github-action) · [Auto-fix](#-auto-fix)
+**At a glance:** 8 scanners · 5 report formats · 7 package ecosystems for SBOM/CVE · auto-fix PRs · policy-as-code · fail-closed by design
+
+[Quick start](#-quick-start) · [What it checks](#-what-it-checks) · [SBOM](#-sbom) · [GitHub Action](#-github-action) · [Auto-fix](#-auto-fix) · [Professional service](#-professional-audit-service)
 
 </div>
 
@@ -34,21 +37,25 @@ BlackByte Hardener is **not** a replacement for the specialists. Use them too:
 
 | Need | Best tool | Where bbharden fits |
 |---|---|---|
-| Deep secret detection, git **history**, live key verification | gitleaks, TruffleHog | bbharden scans the working tree only and does not verify keys — it is a cheap first pass |
+| Deep secret detection with **live key verification**, huge history | gitleaks, TruffleHog | bbharden scans tree and (opt-in) history with the same rules but does **not** verify keys — a cheap, dependency-free first pass |
 | Broad code SAST (hundreds of languages/rules) | Semgrep, CodeQL | out of scope |
-| Container / IaC / OS-package CVEs | Trivy, Grype | bbharden covers Dockerfile *hygiene* and pinned PyPI/npm CVEs via OSV |
+| Container image / OS-package CVEs, full IaC policy library | Trivy, Grype, Checkov | bbharden covers Dockerfile/K8s/Compose/Terraform *hygiene* and CVEs for pinned language packages via OSV |
 | Repo-level supply-chain scoring | OpenSSF Scorecard | complementary |
 
-Where bbharden is different: **zero dependencies** (one `git clone`, no Go
-binary, no Docker pull), **it writes the fix** (`SECURITY.md`, Dependabot,
-`.gitignore`, SHA-pinned Actions) and can open the hardening PR for you, and it
-covers repo-hygiene + CI + Docker + secrets in one pass with SARIF output.
+Where bbharden is different: **zero dependencies** (one `git clone`, no Go binary,
+no Docker pull), **it writes the fix** (`SECURITY.md`, Dependabot, `.gitignore`,
+SHA-pinned Actions) and can open the hardening PR for you, it is **fail-closed**
+(a crashed scanner is a failure, never a silent pass), and one pass gives you
+secrets + CI + containers + IaC + dependencies with SARIF, HTML and SBOM output.
+
+**What it is not:** it is not certified by any authority, and its compliance
+mapping (ISO 27001, OWASP CI/CD, CIS…) is *indicative*, not a statement of compliance.
 
 ## 🚀 Quick start
 
 ```bash
 # Clone and run — no install, no pip, nothing to download
-git clone https://github.com/8L4CK8Y73/bbharden.git
+git clone https://github.com/8l4ck8y73-afk/bbharden.git
 cd bbharden
 python3 -m bbharden.cli scan /path/to/your/repo
 ```
@@ -337,6 +344,13 @@ bbharden is meant to be pointed at repositories you do not trust, so:
   echoed (secrets and Dockerfile `ENV`/`ARG` evidence are redacted).
 - **Network is opt-in and minimal**: only `--osv` (package names + versions) and
   `--pin-actions` (read-only `git ls-remote` on the actions' public repos).
+
+## 💼 Professional audit service
+
+Want the scan run, triaged and explained for you? A done-for-you passive audit for
+small businesses (report, prioritized fixes, optional monthly re-scan) is described in
+[`docs/service/OFERTA.md`](docs/service/OFERTA.md); the report template and terms are in
+[`docs/service/`](docs/service/). The open-source tool stays free (MIT).
 
 ## Roadmap
 
