@@ -1,0 +1,49 @@
+name: Auto-Harden
+
+# Opens (or updates) a pull request with the hardening fixes BlackByte Hardener
+# can apply automatically — missing SECURITY.md, Dependabot config, .gitignore
+# secret patterns, etc. Findings that need human judgment are NOT auto-applied.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "23 7 * * 1"  # weekly, Monday 07:23 UTC
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-harden:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Apply automatic hardening fixes
+        id: fix
+        run: |
+          set +e
+          python3 -m bbharden.cli fix . \
+            --summary "$RUNNER_TEMP/pr-body.md" \
+            --require-changes
+          code=$?
+          if [ "$code" -eq 3 ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          elif [ "$code" -eq 0 ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "bbharden fix failed with code $code" >&2
+            exit "$code"
+          fi
+
+      - name: Create or update pull request
+        if: steps.fix.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          branch: bbharden/auto-harden
+          base: ${{ github.ref_name }}
+          title: "🛡️ Automated hardening fixes"
+          body-path: ${{ runner.temp }}/pr-body.md
+          commit-message: "chore(security): apply automated hardening fixes"
+          labels: security, automated
+          delete-branch: true
