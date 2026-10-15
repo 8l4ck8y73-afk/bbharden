@@ -231,7 +231,93 @@ def _collect_packages(ctx):
             if nm and vr:
                 found.setdefault(("PyPI", _pep503(nm.group(1)), vr.group(1)),
                                  (ctx.rel(p), 1))
+    _collect_other_ecosystems(ctx, found)
     return found
+
+
+# ---- Go, Rust, Maven, Ruby, PHP: exact versions only (text parsing, no execution)
+_GO_REQ = re.compile(r"^\s*(?:require\s+)?(?P<mod>[A-Za-z0-9._~/\-]+\.[A-Za-z0-9._~/\-]+)"
+                     r"\s+v(?P<ver>\d[0-9A-Za-z.+\-]*)\s*(?://.*)?$")
+
+
+def _mvn_blocks(text: str):
+    """<dependency>…</dependency> bodies in linear time (a lazy regex is
+    quadratic on an unterminated-tag bomb)."""
+    pos = 0
+    while True:
+        a = text.find("<dependency>", pos)
+        if a < 0:
+            return
+        b = text.find("</dependency>", a)
+        if b < 0:
+            return
+        yield text[a + 12:b]
+        pos = b + 13
+
+
+_MVN_TAG = lambda tag: re.compile(rf"<{tag}>\s*([^<>\s]+)\s*</{tag}>")  # noqa: E731
+_MVN_G, _MVN_A, _MVN_V = _MVN_TAG("groupId"), _MVN_TAG("artifactId"), _MVN_TAG("version")
+_GEM_SPEC = re.compile(r"^    (?P<n>[A-Za-z0-9_.\-]+) \((?P<v>\d[0-9A-Za-z.\-]*)\)\s*$")
+
+
+def _collect_other_ecosystems(ctx, found) -> None:
+    for p in ctx.glob("**/go.mod"):
+        in_block = False
+        for i, raw in enumerate((ctx.read_text(p) or "").splitlines(), start=1):
+            s = raw.strip()
+            if s.startswith("require ("):
+                in_block = True
+                continue
+            if in_block and s == ")":
+                in_block = False
+                continue
+            if not (in_block or s.startswith("require ")):
+                continue
+            m = _GO_REQ.match(raw)
+            if m:
+                found.setdefault(("Go", m.group("mod"), m.group("ver")), (ctx.rel(p), i))
+
+    for p in ctx.glob("**/Cargo.lock"):
+        for block in (ctx.read_text(p) or "").split("[[package]]")[1:]:
+            nm = re.search(r'^name\s*=\s*"([^"]+)"', block, re.M)
+            vr = re.search(r'^version\s*=\s*"([^"]+)"', block, re.M)
+            src = re.search(r'^source\s*=\s*"([^"]+)"', block, re.M)
+            # Only registry crates; path/git dependencies have no registry identity.
+            if nm and vr and src and src.group(1).startswith("registry+"):
+                found.setdefault(("crates.io", nm.group(1), vr.group(1)), (ctx.rel(p), 1))
+
+    for p in ctx.glob("**/pom.xml"):
+        text = re.sub(r"<!--.*?-->", "", ctx.read_text(p) or "", flags=re.S)
+        for d in _mvn_blocks(text):
+            g, a, v = _MVN_G.search(d), _MVN_A.search(d), _MVN_V.search(d)
+            # Property references (${x}) and ranges ([1,2)) are not concrete versions.
+            if g and a and v and re.fullmatch(r"\d[0-9A-Za-z._\-]*", v.group(1)):
+                found.setdefault(("Maven", f"{g.group(1)}:{a.group(1)}", v.group(1)),
+                                 (ctx.rel(p), 1))
+
+    for p in ctx.glob("**/Gemfile.lock"):
+        specs = False
+        for i, raw in enumerate((ctx.read_text(p) or "").splitlines(), start=1):
+            if raw.strip() == "specs:":
+                specs = True
+                continue
+            if specs and raw and not raw.startswith(" "):
+                specs = False
+            m = _GEM_SPEC.match(raw) if specs else None
+            if m:
+                found.setdefault(("RubyGems", m.group("n"), m.group("v")), (ctx.rel(p), i))
+
+    for p in ctx.glob("**/composer.lock"):
+        data = _load_json(ctx, p) or {}
+        for section in ("packages", "packages-dev"):
+            for pkg in data.get(section) or []:
+                if not isinstance(pkg, dict):
+                    continue
+                n, v = pkg.get("name"), pkg.get("version")
+                if isinstance(n, str) and isinstance(v, str):
+                    v = v[1:] if v.startswith("v") else v
+                    if re.fullmatch(r"\d[0-9A-Za-z.\-+]*", v):
+                        found.setdefault(("Packagist", n, v), (ctx.rel(p), 1))
 
 
 def _scan_osv(ctx) -> Iterator[Finding]:

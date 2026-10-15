@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.8.0 — more ecosystems for SBOM and `--osv`
+
+- Exact-version packages are now read from **go.mod**, **Cargo.lock** (registry crates only), **pom.xml** (literal versions; `${property}` and ranges skipped), **Gemfile.lock** and **composer.lock**, in addition to PyPI/npm. They feed both `sbom` and `--osv`.
+- Correct purls (`pkg:golang`, `pkg:cargo`, `pkg:maven`, `pkg:gem`, `pkg:composer`).
+- Verified: SBOMs for ripgrep (71 crates across two lockfiles) and fzf (11 Go modules, 15 gems) match the raw lockfile counts and validate against the official CycloneDX 1.5 schema. Parsers are linear-time on hostile input (a lazy-regex quadratic in pom parsing was found and fixed before release).
+- Not yet validated live: OSV matching for these ecosystems (no network to api.osv.dev here); Go pseudo-versions and `+incompatible` versions are passed through as-is.
+
 ## 0.7.0 — git-history secret scanning
 
 - **`scan --history`** (opt-in): finds secrets that were committed and later removed, reporting the oldest commit that introduced each (`SECRET_IN_HISTORY`, evidence redacted). Secrets still in the tree are not double-reported. `--history-max-commits N`.
