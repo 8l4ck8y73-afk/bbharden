@@ -86,10 +86,13 @@ def cmd_scan(args) -> int:
         print(f"error: target is not a directory: {root}", file=sys.stderr)
         return 2
     cfg = _load_config(args, root)
-    ctx = _make_context(args, root, cfg, use_osv=args.osv)
+    ctx = _make_context(args, root, cfg, use_osv=args.osv, history=args.history,
+                        history_max_commits=args.history_max_commits)
     baseline = suppress.load_baseline(args.baseline) if args.baseline else None
-    findings = _run_scan(ctx, args.only or cfg.only, args.skip or cfg.skip,
-                         baseline, cfg)
+    only = args.only or cfg.only
+    if args.history and only and "history" not in only:
+        only = list(only) + ["history"]
+    findings = _run_scan(ctx, only, args.skip or cfg.skip, baseline, cfg)
     fail_on = args.fail_on or cfg.fail_on
     if args.write_baseline:
         n = suppress.write_baseline(args.write_baseline, findings)
@@ -293,6 +296,11 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--output", "-o", help="write the report to a file")
     s.add_argument("--fail-on", choices=_SEV_ORDER, default=None,
                    help="exit non-zero if a finding at or above this severity exists")
+    s.add_argument("--history", action="store_true",
+                   help="also scan git history for secrets that were committed and "
+                        "later removed (runs read-only `git log`; hooks/ext-diff disabled)")
+    s.add_argument("--history-max-commits", type=int, default=10000, metavar="N",
+                   help="newest N commits to scan with --history (default 10000)")
     s.add_argument("--osv", action="store_true",
                    help="match pinned dependencies against OSV.dev for known CVEs "
                         "(needs network; sends package names+versions only)")

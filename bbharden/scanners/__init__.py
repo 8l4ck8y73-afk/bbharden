@@ -8,7 +8,7 @@ from __future__ import annotations
 from typing import Callable, Iterable, List
 
 from ..findings import Finding
-from . import custom, dependencies, dockerfile, iac, secrets, security_files, workflows
+from . import custom, dependencies, dockerfile, history, iac, secrets, security_files, workflows
 
 # A scanner is: (ctx) -> Iterable[Finding]
 Scanner = Callable[["object"], Iterable[Finding]]
@@ -21,6 +21,7 @@ ALL_SCANNERS: List[tuple[str, Scanner]] = [
     ("iac", iac.scan),
     ("security-files", security_files.scan),
     ("custom", custom.scan),
+    ("history", history.scan),
 ]
 
 

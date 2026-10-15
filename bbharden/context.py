@@ -83,6 +83,9 @@ class RepoContext:
     # By default the secrets scanner skips test/fixture/example paths (they hold
     # fake credentials); set True to scan them too.
     scan_tests: bool = False
+    # Opt-in: scan git history for secrets (see scanners/history.py).
+    history: bool = False
+    history_max_commits: int = 10000
     _text_cache: dict = field(default_factory=dict)
     _cache_used: int = 0
 
