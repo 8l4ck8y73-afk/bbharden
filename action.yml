@@ -1,0 +1,41 @@
+name: "BlackByte Hardener"
+description: "Defensive repo hardening scan with SARIF output and auto-fix PRs."
+branding:
+  icon: "shield"
+  color: "gray-dark"
+
+inputs:
+  target:
+    description: "Path to scan"
+    required: false
+    default: "."
+  fail-on:
+    description: "Fail the job on findings at or above this severity (critical|high|medium|low|info). Empty = never fail."
+    required: false
+    default: "high"
+  format:
+    description: "Report format to emit as a file (sarif|markdown|json)"
+    required: false
+    default: "sarif"
+  output:
+    description: "Output file path"
+    required: false
+    default: "bbharden.sarif"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Run BlackByte Hardener
+      shell: bash
+      run: |
+        FAIL_ARG=""
+        if [ -n "${{ inputs.fail-on }}" ]; then
+          FAIL_ARG="--fail-on ${{ inputs.fail-on }}"
+        fi
+        python3 -m bbharden.cli scan "${{ inputs.target }}" \
+          --format "${{ inputs.format }}" \
+          --output "${{ inputs.output }}" \
+          $FAIL_ARG
+      env:
+        # The action ships the package; expose it on PYTHONPATH.
+        PYTHONPATH: ${{ github.action_path }}

@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+
+# bbharden output
+*.sarif
+bbharden-report.*
+
+# Secrets
+.env
+.env.*
+*.pem
+*.key
+id_rsa
+*.p12
+*.pfx
+credentials.json
+*.keystore

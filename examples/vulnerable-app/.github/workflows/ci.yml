@@ -1,0 +1,14 @@
+name: CI
+on:
+  pull_request_target:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: some-org/some-action@main
+      - name: Greet
+        run: |
+          echo "Building PR: ${{ github.event.pull_request.title }}"

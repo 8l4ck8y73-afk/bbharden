@@ -1,0 +1,80 @@
+"""Repository context: file discovery + cheap helpers shared by scanners."""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Iterator
+
+# Directories we never descend into.
+_IGNORE_DIRS = {
+    ".git", "node_modules", ".venv", "venv", "__pycache__", ".mypy_cache",
+    ".pytest_cache", "dist", "build", ".tox", ".idea", ".next", "vendor",
+    "site-packages",
+}
+
+# Extensions treated as binary / not worth reading as text.
+_BINARY_EXT = {
+    ".png", ".jpg", ".jpeg", ".gif", ".pdf", ".zip", ".gz", ".tar", ".7z",
+    ".ico", ".woff", ".woff2", ".ttf", ".eot", ".mp4", ".mp3", ".wav",
+    ".so", ".dylib", ".dll", ".pyc", ".class", ".jar", ".bin", ".wasm",
+}
+
+_MAX_BYTES = 2_000_000  # skip files larger than ~2MB for text scanning
+
+
+@dataclass
+class RepoContext:
+    root: Path
+    max_bytes: int = _MAX_BYTES
+    _text_cache: dict = field(default_factory=dict)
+
+    def rel(self, path: Path) -> str:
+        try:
+            return str(path.relative_to(self.root))
+        except ValueError:
+            return str(path)
+
+    def walk(self) -> Iterator[Path]:
+        for dirpath, dirnames, filenames in os.walk(self.root):
+            dirnames[:] = [d for d in dirnames if d not in _IGNORE_DIRS]
+            for fn in filenames:
+                yield Path(dirpath) / fn
+
+    def text_files(self) -> Iterator[Path]:
+        for p in self.walk():
+            if p.suffix.lower() in _BINARY_EXT:
+                continue
+            try:
+                if p.stat().st_size > self.max_bytes:
+                    continue
+            except OSError:
+                continue
+            yield p
+
+    def read_text(self, path: Path) -> str | None:
+        key = str(path)
+        if key in self._text_cache:
+            return self._text_cache[key]
+        try:
+            data = path.read_text(encoding="utf-8", errors="replace")
+        except (OSError, UnicodeError):
+            data = None
+        self._text_cache[key] = data
+        return data
+
+    def find(self, *names: str) -> list[Path]:
+        """Return existing files matching any of the given relative names."""
+        out = []
+        for name in names:
+            candidate = self.root / name
+            if candidate.exists():
+                out.append(candidate)
+        return out
+
+    def glob(self, pattern: str) -> list[Path]:
+        return [
+            p for p in self.root.glob(pattern)
+            if not any(part in _IGNORE_DIRS for part in p.parts)
+        ]

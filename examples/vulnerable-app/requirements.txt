@@ -1,0 +1,5 @@
+# Example requirements with hygiene problems
+requests>=2.0.0
+flask
+django==4.2.1
+pyyaml

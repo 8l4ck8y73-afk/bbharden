@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bbharden"
+version = "0.1.0"
+description = "BlackByte Hardener — defensive repository hardening & auto-remediation."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "Apache-2.0" }
+authors = [{ name = "8L4CK8Y73" }]
+keywords = ["security", "sast", "hardening", "devsecops", "remediation", "sarif"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Topic :: Security",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+]
+# Zero runtime dependencies — stdlib only, by design.
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/8L4CK8Y73/bbharden"
+Issues = "https://github.com/8L4CK8Y73/bbharden/issues"
+
+[project.scripts]
+bbharden = "bbharden.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["bbharden*"]
