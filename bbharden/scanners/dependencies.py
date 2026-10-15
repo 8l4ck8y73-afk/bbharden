@@ -338,31 +338,71 @@ def _scan_osv(ctx) -> Iterator[Finding]:
         return
 
     for pkg, vulns in results.items():
+        if not vulns:
+            continue
         eco, name, version = pkg
         file, line = packages[pkg]
-        fixes = [v.fixed_in for v in vulns if v.fixed_in]
-        keyed = [(osv_mod._vkey(f), f) for f in fixes if osv_mod._vkey(f) is not None]
-        best = max(keyed)[1] if keyed else None
-        n_fixed = sum(1 for v in vulns if v.fixed_in)
-        for v in vulns:
-            ident = v.cve or v.id
-            fix = (f"Upgrade `{name}` to {v.fixed_in} or later."
-                   if v.fixed_in else
-                   f"Upgrade `{name}` to a release that fixes {ident}, or remove it.")
-            if best and len(vulns) > 1:
-                fix += (f" Upgrading to {best} or later resolves all {n_fixed} "
-                        f"advisories for this package that list a fix.")
-            yield Finding(
-                rule_id="DEP_KNOWN_VULN",
-                title=f"Known vulnerability in {name} {version} ({ident})",
-                severity=v.severity,
-                file=file, line=line,
-                message=(v.summary or f"{name} {version} is affected by {ident}.")
-                        + f" [{eco}] {v.id}",
-                remediation=fix,
-                evidence=f"{name}=={version}",
-                cwe="CWE-1395",
-            )
+        if len(vulns) == 1 or getattr(ctx, "osv_detail", False):
+            yield from _per_advisory(eco, name, version, file, line, vulns)
+        else:
+            yield _grouped(eco, name, version, file, line, vulns)
+
+
+def _best_fix(vulns):
+    from .. import osv as osv_mod
+    keyed = [(osv_mod._vkey(v.fixed_in), v.fixed_in) for v in vulns
+             if v.fixed_in and osv_mod._vkey(v.fixed_in) is not None]
+    return max(keyed)[1] if keyed else None
+
+
+def _per_advisory(eco, name, version, file, line, vulns):
+    best = _best_fix(vulns)
+    n_fixed = sum(1 for v in vulns if v.fixed_in)
+    for v in vulns:
+        ident = v.cve or v.id
+        fix = (f"Upgrade `{name}` to {v.fixed_in} or later."
+               if v.fixed_in else
+               f"Upgrade `{name}` to a release that fixes {ident}, or remove it.")
+        if best and len(vulns) > 1:
+            fix += (f" Upgrading to {best} or later resolves all {n_fixed} "
+                    f"advisories for this package that list a fix.")
+        yield Finding(
+            rule_id="DEP_KNOWN_VULN",
+            title=f"Known vulnerability in {name} {version} ({ident})",
+            severity=v.severity, file=file, line=line,
+            message=(v.summary or f"{name} {version} is affected by {ident}.")
+                    + f" [{eco}] {v.id}",
+            remediation=fix, evidence=f"{name}=={version}", cwe="CWE-1395",
+        )
+
+
+def _grouped(eco, name, version, file, line, vulns):
+    """One finding per vulnerable package: what a reader acts on is the upgrade."""
+    order = sorted(vulns, key=lambda v: (-v.severity.rank, v.cve or v.id))
+    counts = {}
+    for v in order:
+        counts[v.severity.value] = counts.get(v.severity.value, 0) + 1
+    breakdown = ", ".join(f"{n} {s}" for s, n in counts.items())
+    best = _best_fix(vulns)
+    unfixed = sum(1 for v in vulns if not v.fixed_in)
+    top = "; ".join(f"{v.cve or v.id} ({v.severity.value})" for v in order[:8])
+    more = f"; +{len(order) - 8} more" if len(order) > 8 else ""
+    if best:
+        fix = f"Upgrade `{name}` to {best} or later: that resolves every advisory that lists a fix."
+        if unfixed:
+            fix += f" {unfixed} advisory(ies) list no fix yet — review them individually."
+    else:
+        fix = f"No fixed release is listed; review the advisories and consider replacing `{name}`."
+    return Finding(
+        rule_id="DEP_KNOWN_VULN",
+        title=f"{name} {version}: {len(vulns)} known vulnerabilities ({breakdown})",
+        severity=order[0].severity, file=file, line=line,
+        message=f"[{eco}] Most severe: {top}{more}. Use --osv-detail for one finding per advisory.",
+        remediation=fix, evidence=f"{name}=={version}", cwe="CWE-1395",
+        details=[{"id": v.id, "cve": v.cve, "severity": v.severity.value,
+                  "summary": v.summary, "fixed_in": v.fixed_in,
+                  "url": f"https://osv.dev/vulnerability/{v.id}"} for v in order],
+    )
 
 
 def scan(ctx) -> Iterator[Finding]:

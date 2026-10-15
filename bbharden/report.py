@@ -223,6 +223,15 @@ def _rich(s) -> str:
     return re.sub(r"`([^`\n]+)`", r"<code>\1</code>", _e(s))
 
 
+_GROUP_LABELS = {"DEP_KNOWN_VULN": "Dependencies with known vulnerabilities"}
+
+
+def _group_title(rid, fs) -> str:
+    if len({f.title for f in fs}) == 1:
+        return fs[0].title
+    return _GROUP_LABELS.get(rid, f"{fs[0].title} (and similar)")
+
+
 def html_report(findings: List[Finding], root: str) -> str:
     """Self-contained HTML report (no scripts, no external requests, all text escaped)."""
     import datetime as _dt
@@ -279,31 +288,55 @@ def html_report(findings: List[Finding], root: str) -> str:
         ranked = sorted(groups.items(), key=lambda kv: (-kv[1][0].severity.rank, -len(kv[1])))
         for rid, fs in ranked[:5]:
             o.append(f'<li><span class="sev {fs[0].severity.value}">{fs[0].severity.value}</span> '
-                     f"&mdash; {_e(fs[0].title)} <span class=\"mut\">({len(fs)}&times;, "
+                     f"&mdash; {_e(_group_title(rid, fs))} <span class=\"mut\">({len(fs)}&times;, "
                      f"<code>{_e(rid)}</code>)</span></li>")
         o.append("</ol></div><h2>Details</h2>")
         for rid, fs in groups.items():
             f0 = fs[0]
             refs = compliance.references(rid) + ([f0.cwe] if f0.cwe else [])
             autofix = " &middot; auto-fix available" if any(x.has_autofix for x in fs) else ""
+            mixed = len({f.title for f in fs}) > 1
             o.append(f'<details><summary><span class="sev {f0.severity.value}">'
-                     f"{f0.severity.value}</span> &middot; {_e(f0.title)} "
+                     f"{f0.severity.value}</span> &middot; {_e(_group_title(rid, fs))} "
                      f'<span class="mut">&middot; {len(fs)}&times;{autofix}</span></summary><div class="body">')
-            o.append(f"<p>{_rich(f0.message)}</p>")
-            o.append(f'<p><strong>How to fix:</strong> <span class="fix">{_rich(f0.remediation)}</span></p>')
+            if not mixed:
+                o.append(f"<p>{_rich(f0.message)}</p>")
+                o.append(f'<p><strong>How to fix:</strong> <span class="fix">{_rich(f0.remediation)}</span></p>')
             if refs:
                 o.append("<p>" + "".join(f'<span class="tag">{_e(r)}</span>' for r in refs) + "</p>")
-            o.append("<table><tr><th>Location</th><th>Evidence</th></tr>")
+            if mixed:
+                o.append("<table><tr><th>Location</th><th>Finding</th><th>Evidence</th></tr>")
+            else:
+                o.append("<table><tr><th>Location</th><th>Evidence</th></tr>")
             for f in fs[:50]:
-                o.append(f"<tr><td><code>{_e(f.file)}:{f.line}</code></td>"
+                cell = (f"<td><strong>{_e(f.title)}</strong><br><span class=\"mut\">"
+                        f"{_rich(f.remediation)}</span></td>") if mixed else ""
+                o.append(f"<tr><td><code>{_e(f.file)}:{f.line}</code></td>{cell}"
                          f"<td><code>{_e(f.evidence)}</code></td></tr>")
             if len(fs) > 50:
-                o.append(f'<tr><td colspan="2" class="mut">+ {len(fs) - 50} more</td></tr>')
-            o.append(f'</table><div class="mut" style="margin-top:6px">Rule <code>{_e(rid)}</code></div>'
+                o.append(f'<tr><td colspan="3" class="mut">+ {len(fs) - 50} more</td></tr>')
+            o.append("</table>")
+            for f in fs:
+                if not f.details:
+                    continue
+                o.append(f"<p style=\"margin-top:12px\"><strong>{_e(f.title)}</strong> &mdash; "
+                         f"{_rich(f.remediation)}</p>")
+                o.append("<table><tr><th>Advisory</th><th>Severity</th><th>Summary</th>"
+                         "<th>Fixed in</th></tr>")
+                for d in f.details[:100]:
+                    ident = d.get("cve") or d.get("id")
+                    o.append(f"<tr><td><code>{_e(ident)}</code><br><span class=\"mut\">"
+                             f"{_e(d.get('id'))}</span></td>"
+                             f'<td><span class="sev {_e(d.get("severity"))}">{_e(d.get("severity"))}</span></td>'
+                             f"<td>{_e(d.get('summary'))}</td><td><code>{_e(d.get('fixed_in') or '—')}</code></td></tr>")
+                if len(f.details) > 100:
+                    o.append(f'<tr><td colspan="4" class="mut">+ {len(f.details) - 100} more (see JSON)</td></tr>')
+                o.append("</table>")
+            o.append(f'<div class="mut" style="margin-top:6px">Rule <code>{_e(rid)}</code></div>'
                      "</div></details>")
 
     o.append(f"<footer><p>{_e(compliance.DISCLAIMER)} Secret values are never printed: "
              "evidence is redacted. This report reflects the repository contents at scan "
-             "time; it does not cover git history, running systems or runtime behaviour.</p>"
+             "time; git history is covered only when the scan ran with --history, and running systems or runtime behaviour are not covered.</p>"
              "</footer></main></body></html>")
     return "".join(o)

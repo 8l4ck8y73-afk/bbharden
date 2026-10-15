@@ -85,6 +85,8 @@ class RepoContext:
     scan_tests: bool = False
     # Opt-in: scan git history for secrets (see scanners/history.py).
     history: bool = False
+    # One DEP_KNOWN_VULN per advisory instead of one per package.
+    osv_detail: bool = False
     history_max_commits: int = 10000
     _text_cache: dict = field(default_factory=dict)
     _cache_used: int = 0

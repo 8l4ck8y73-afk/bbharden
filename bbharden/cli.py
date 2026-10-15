@@ -86,7 +86,7 @@ def cmd_scan(args) -> int:
         print(f"error: target is not a directory: {root}", file=sys.stderr)
         return 2
     cfg = _load_config(args, root)
-    ctx = _make_context(args, root, cfg, use_osv=args.osv, history=args.history,
+    ctx = _make_context(args, root, cfg, use_osv=args.osv, osv_detail=args.osv_detail, history=args.history,
                         history_max_commits=args.history_max_commits)
     baseline = suppress.load_baseline(args.baseline) if args.baseline else None
     only = args.only or cfg.only
@@ -304,6 +304,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--osv", action="store_true",
                    help="match pinned dependencies against OSV.dev for known CVEs "
                         "(needs network; sends package names+versions only)")
+    s.add_argument("--osv-detail", action="store_true",
+                   help="with --osv: one finding per advisory instead of one per package")
     s.add_argument("--osv-required", action="store_true",
                    help="with --osv: exit 2 if the CVE lookup could not complete "
                         "(default: continue and print a note)")

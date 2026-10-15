@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.2 — one finding per vulnerable package
+
+- `--osv` now reports **one finding per package** ("django 4.2.1: 50 known vulnerabilities (4 critical, …)") with the single upgrade that fixes them, instead of one line per advisory. Severity is the worst advisory. The full list is kept in JSON (`details`) and shown as a table in the HTML report.
+- `--osv-detail` restores one finding per advisory.
+- HTML: groups mixing different findings of the same rule get a neutral header and per-row titles/fixes (previously only the first finding's text was shown for the whole group). Footer no longer claims history is never scanned.
+
 ## 0.8.1 — OSV de-duplication (found by the first live `--osv` run)
 
 - First live run (django 4.2.1) returned 74 findings for one package: OSV lists the same flaw once per database (GHSA-…, PYSEC-…), so each CVE appeared 2-3 times, sometimes with different severities.

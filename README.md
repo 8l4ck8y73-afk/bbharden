@@ -175,6 +175,7 @@ Turn "unpinned dependency" into "this exact version has CVE-XXXX":
 
 ```bash
 bbharden scan . --osv
+bbharden scan . --osv --osv-detail   # one finding per advisory instead of per package
 ```
 
 ```

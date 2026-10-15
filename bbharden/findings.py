@@ -51,6 +51,9 @@ class Finding:
     # A short excerpt of the offending line, already redacted when sensitive.
     evidence: str = ""
     cwe: Optional[str] = None
+    # Optional structured sub-items (e.g. every advisory behind a grouped
+    # DEP_KNOWN_VULN finding). Rendered by JSON/HTML; omitted when None.
+    details: Optional[list] = None
 
     @property
     def has_autofix(self) -> bool:
@@ -62,4 +65,6 @@ class Finding:
         d["has_autofix"] = self.has_autofix
         # fix_content can be large; omit from the compact dict form.
         d.pop("fix_content", None)
+        if d.get("details") is None:
+            d.pop("details", None)
         return d
