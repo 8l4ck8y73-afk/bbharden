@@ -36,6 +36,18 @@ def purl(ecosystem: str, name: str, version: str) -> str:
             scope, pkg = name.split("/", 1)
             return f"pkg:npm/{quote(scope, safe='')}/{quote(pkg, safe='')}@{v}"
         return f"pkg:npm/{quote(name, safe='')}@{v}"
+    if ecosystem == "Go":
+        return f"pkg:golang/{quote(name, safe='/')}@v{v}"
+    if ecosystem == "crates.io":
+        return f"pkg:cargo/{quote(name, safe='')}@{v}"
+    if ecosystem == "Maven" and ":" in name:
+        g, a = name.split(":", 1)
+        return f"pkg:maven/{quote(g, safe='')}/{quote(a, safe='')}@{v}"
+    if ecosystem == "RubyGems":
+        return f"pkg:gem/{quote(name, safe='')}@{v}"
+    if ecosystem == "Packagist" and "/" in name:
+        vendor, pkg = name.split("/", 1)
+        return f"pkg:composer/{quote(vendor, safe='')}/{quote(pkg, safe='')}@{v}"
     return f"pkg:generic/{quote(name, safe='')}@{v}"
 
 

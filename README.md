@@ -139,6 +139,8 @@ bbharden sbom . -o sbom.cdx.json            # CycloneDX 1.5 (validated against t
 bbharden sbom . --osv -o sbom.cdx.json      # embeds known vulnerabilities (needs network)
 ```
 
+Reads exact versions from `requirements*.txt`, `package.json`/`package-lock.json`, `Pipfile.lock`, `poetry.lock`, `go.mod`, `Cargo.lock`, `pom.xml` (literal versions only), `Gemfile.lock` and `composer.lock`. Ranges are never guessed.
+
 Set `SOURCE_DATE_EPOCH` for byte-reproducible output.
 
 ## 🙈 Suppressions & baselines
