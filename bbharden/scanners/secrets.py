@@ -125,13 +125,48 @@ def _shannon_entropy(s: str) -> float:
     return -sum((c / n) * math.log2(c / n) for c in counts.values())
 
 
+REMEDIATION = (
+    "Remove the secret from the code and from git history (e.g. with "
+    "`git filter-repo`), then ROTATE it at the provider — assume it is "
+    "already compromised. Load it at runtime from an environment variable "
+    "or a secrets manager, and add the file pattern to .gitignore."
+)
+
+
+def match_line(line: str):
+    """Yield (rule_id, title, severity, redacted_evidence, message) for a line.
+
+    Shared by the working-tree scan and the git-history scan so both apply the
+    exact same rules and calibration.
+    """
+    # Very long lines (minified bundles) only skip the generic heuristic:
+    # provider-signature patterns still run, otherwise padding a line
+    # past 1000 chars would hide a real key.
+    long_line = len(line) > 1000
+    matched = False
+    for rule_id, title, rx, sev in _PATTERNS:
+        m = rx.search(line)
+        if not m or not _accept(rule_id, m.group(0)):
+            continue
+        matched = True
+        yield (rule_id, title, sev, _redact(m.group(0)),
+               f"Possible {title.lower()} committed to the repository.")
+    # Generic assignment heuristic (skip if a specific rule already hit).
+    if matched or long_line:
+        return
+    am = _ASSIGN.search(line)
+    if am:
+        val = am.group("val")
+        if _PLACEHOLDER.match(val) or _WORDLIKE.match(val):
+            return
+        if _shannon_entropy(val) < 3.2:
+            return
+        yield ("SECRET_GENERIC_ASSIGN", "Hardcoded credential", Severity.HIGH,
+               _redact(val),
+               f"A '{am.group(1)}' value with high entropy appears to be hardcoded.")
+
+
 def scan(ctx) -> Iterator[Finding]:
-    remediation = (
-        "Remove the secret from the code and from git history (e.g. with "
-        "`git filter-repo`), then ROTATE it at the provider — assume it is "
-        "already compromised. Load it at runtime from an environment variable "
-        "or a secrets manager, and add the file pattern to .gitignore."
-    )
     for path in ctx.text_files():
         name = ctx.rel(path)
         if _is_ignored(name, getattr(ctx, "scan_tests", False)):
@@ -140,50 +175,9 @@ def scan(ctx) -> Iterator[Finding]:
         if not text:
             continue
         for lineno, line in enumerate(text.splitlines(), start=1):
-            # Very long lines (minified bundles) only skip the generic heuristic:
-            # provider-signature patterns still run, otherwise padding a line
-            # past 1000 chars would hide a real key.
-            long_line = len(line) > 1000
-            matched_rules = set()
-            for rule_id, title, rx, sev in _PATTERNS:
-                m = rx.search(line)
-                if not m or not _accept(rule_id, m.group(0)):
-                    continue
-                matched_rules.add(rule_id)
+            for rule_id, title, sev, ev, msg in match_line(line):
                 yield Finding(
-                    rule_id=rule_id,
-                    title=title,
-                    severity=sev,
-                    file=name,
-                    line=lineno,
-                    message=f"Possible {title.lower()} committed to the repository.",
-                    remediation=remediation,
-                    evidence=_redact(m.group(0)),
-                    cwe="CWE-798",
-                )
-            # Generic assignment heuristic (skip if a specific rule already hit).
-            if matched_rules or long_line:
-                continue
-            am = _ASSIGN.search(line)
-            if am:
-                val = am.group("val")
-                if _PLACEHOLDER.match(val):
-                    continue
-                if _WORDLIKE.match(val):
-                    continue
-                if _shannon_entropy(val) < 3.2:
-                    continue
-                yield Finding(
-                    rule_id="SECRET_GENERIC_ASSIGN",
-                    title="Hardcoded credential",
-                    severity=Severity.HIGH,
-                    file=name,
-                    line=lineno,
-                    message=(
-                        f"A '{am.group(1)}' value with high entropy appears to be "
-                        "hardcoded."
-                    ),
-                    remediation=remediation,
-                    evidence=_redact(val),
-                    cwe="CWE-798",
+                    rule_id=rule_id, title=title, severity=sev, file=name,
+                    line=lineno, message=msg, remediation=REMEDIATION,
+                    evidence=ev, cwe="CWE-798",
                 )

@@ -101,6 +101,14 @@ bbharden scan . --exclude examples --exclude 'docs/*.md'
 Test, fixture and example paths are skipped by the secrets scanner (they usually
 hold fake keys); add `--scan-tests` to include them. The IaC scanner skips the same paths.
 
+## 🕰️ Git history (`--history`)
+
+Deleting a leaked key does not un-leak it. `bbharden scan . --history` also reads the
+added lines of past commits and reports secrets that are gone from the tree but still
+retrievable from any clone (rotate them!). Opt-in; it runs read-only `git log` with
+hooks, external diff drivers and textconv disabled. Shallow clones and the commit cap
+(`--history-max-commits`) are reported as partial coverage, never as clean.
+
 ## ⚙️ Policy file (`.bbharden.toml`)
 
 Commit one file to make results reproducible across a team (needs Python ≥ 3.11):
@@ -336,7 +344,8 @@ bbharden is meant to be pointed at repositories you do not trust, so:
 - [x] Terraform / Kubernetes / Compose hardening
 - [x] Policy file and custom rules (`.bbharden.toml`)
 - [x] CycloneDX SBOM and HTML report
-- [ ] Git-history secret scanning, opt-in key verification
+- [x] Git-history secret scanning (`--history`)
+- [ ] Opt-in live key verification, signed releases (Sigstore)
 - [x] Baseline file and inline suppressions
 - [x] SHA-pin GitHub Actions (`fix --pin-actions`)
 
