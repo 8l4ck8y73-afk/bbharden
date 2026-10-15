@@ -81,11 +81,11 @@ Summary: 🟥 2 critical  🟧 6 high  🟨 4 medium  🟦 4 low  ⬜ 1 info
 
 | Scanner | Examples of what it catches |
 |---|---|
-| **secrets** | AWS keys, private keys, GitHub/Slack/Stripe tokens, hardcoded high-entropy credentials (evidence is always redacted) |
+| **secrets** | AWS keys, private keys, GitHub (classic + fine-grained)/GitLab/npm/Slack/Stripe/SendGrid/Hugging Face tokens, hardcoded high-entropy credentials (evidence is always redacted) |
 | **dockerfile** | runs as root, unpinned / `:latest` base image (understands `scratch`, multi-stage aliases, `ARG` defaults and digests), secrets in `ENV`, `curl \| bash`, `ADD <url>` |
-| **workflows** | `pull_request_target` + checkout, script injection via `${{ github.event.* }}`, actions not pinned to a SHA, workflow with no `permissions:` block |
-| **dependencies** | unpinned pip / npm versions, npm install-time lifecycle scripts |
-| **security-files** | missing `SECURITY.md`, missing Dependabot, committed `.env`, weak `.gitignore` — **all auto-fixable** |
+| **workflows** | `pull_request_target` + checkout of the PR head, script injection via `${{ github.event.* }}` / `github.head_ref` in `run:` and `github-script` (indentation-aware: the `env:` fix is not flagged), unpinned actions, missing or `write-all` `permissions:` |
+| **dependencies** | unpinned pip / npm versions (extras, markers, `==1.*`, `1.x`), npm install-time lifecycle scripts; with `--osv`, CVEs for direct pins **and lockfiles** (`package-lock.json`, `Pipfile.lock`, `poetry.lock`) |
+| **security-files** | missing `SECURITY.md`, missing Dependabot, a `.env` that is tracked by git or not ignored, weak `.gitignore`, Dependabot config generated only for the ecosystems you actually use — **all auto-fixable** |
 
 Run a subset, or leave paths out (repeatable; a bare directory name excludes
 everything beneath it):
@@ -249,6 +249,32 @@ Gate your pipeline:
 ```bash
 bbharden scan . --fail-on high   # exit code 1 if high+ findings exist
 ```
+
+## 🔒 Exit codes & security model
+
+| Code | Meaning |
+|---|---|
+| `0` | scan finished; nothing at/above `--fail-on` |
+| `1` | findings at/above `--fail-on` |
+| `2` | usage error, **a scanner crashed** (incomplete result), or `--osv-required` and the CVE lookup failed |
+| `3` | `fix --require-changes` and there was nothing to fix |
+
+A security gate must never fail *open*: if a scanner crashes, the run exits `2`
+instead of reporting a clean pass.
+
+bbharden is meant to be pointed at repositories you do not trust, so:
+
+- **Symlinks are never followed or written through**, and only regular files are
+  opened (a FIFO in a hostile tree cannot hang the scan). `fix` refuses any target
+  that is a symlink, has a symlinked parent, or escapes the repo, and writes
+  atomically (temp file + rename).
+- **Nothing in the repo is executed.** The tool never runs the project's code, and
+  it reads `.git/index` directly rather than spawning `git` inside the target.
+- **Untrusted text is neutralised in reports**: terminal escapes and bidi
+  overrides are stripped, Markdown/HTML is escaped, and secret values are never
+  echoed (secrets and Dockerfile `ENV`/`ARG` evidence are redacted).
+- **Network is opt-in and minimal**: only `--osv` (package names + versions) and
+  `--pin-actions` (read-only `git ls-remote` on the actions' public repos).
 
 ## Roadmap
 

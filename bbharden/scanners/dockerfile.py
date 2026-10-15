@@ -56,7 +56,7 @@ def _base_image_problem(image: str, stages: set, arg_defaults: dict):
     Never flags: `scratch`, a reference to an earlier build stage, a pinned
     digest, or a variable whose value can't be known statically.
     """
-    if image.lower() == "scratch" or image in stages:
+    if image.lower() == "scratch" or image.lower() in stages:
         return None
     m = re.fullmatch(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?", image)
     if m:
@@ -77,20 +77,59 @@ def _base_image_problem(image: str, stages: set, arg_defaults: dict):
     return None
 
 
+def _logical_lines(text: str):
+    """Yield (first_line_number, joined_instruction) honouring `\\` continuations.
+
+    Comment lines inside a continued instruction are dropped, as Docker does.
+    """
+    buf, start = [], 0
+    for i, raw in enumerate(text.splitlines(), start=1):
+        stripped = raw.strip()
+        if buf and stripped.startswith("#"):
+            continue
+        if not buf:
+            if not stripped or stripped.startswith("#"):
+                continue
+            start = i
+        if stripped.endswith("\\"):
+            buf.append(stripped[:-1].strip())
+            continue
+        buf.append(stripped)
+        yield start, " ".join(p for p in buf if p)
+        buf = []
+    if buf:
+        yield start, " ".join(p for p in buf if p)
+
+
+_SECRET_NAME = re.compile(
+    r"(?i)(password|secret|token|api[_-]?key|private[_-]?key)\s*=")
+_VALUE = re.compile(r"=\s*(\"[^\"]*\"|'[^']*'|\S+)")
+
+
+def _redact_assignments(line: str) -> str:
+    """Hide every value after `=` so a baked-in secret never reaches a report."""
+    return _VALUE.sub("=****", line)
+
+
+def _user_is_root(spec: str) -> bool:
+    user = spec.split(":", 1)[0].strip().strip("\"'")
+    return user in ("root", "0")
+
+
 def scan(ctx) -> Iterator[Finding]:
     for path in _dockerfiles(ctx):
         name = ctx.rel(path)
         text = ctx.read_text(path)
         if not text:
             continue
-        lines = text.splitlines()
-        has_user = False
+        # Only the LAST stage ships, so USER is judged per stage and the verdict
+        # comes from the final one (a USER in a throwaway build stage is moot).
         last_from_line = 0
+        final_user_root = True        # no USER instruction == root
         stages: set = set()
         arg_defaults: dict = {}
 
-        for i, raw in enumerate(lines, start=1):
-            line = raw.strip()
+        for i, line in _logical_lines(text):
             low = line.lower()
 
             am = re.match(r"(?i)arg\s+([A-Za-z_][A-Za-z0-9_]*)=(\S+)", line)
@@ -99,12 +138,13 @@ def scan(ctx) -> Iterator[Finding]:
 
             if low.startswith("from "):
                 last_from_line = i
+                final_user_root = True            # new stage: reset
                 parsed = _parse_from(line)
                 if parsed:
                     image, stage = parsed
                     why = _base_image_problem(image, stages, arg_defaults)
                     if stage:
-                        stages.add(stage)
+                        stages.add(stage.lower())
                     if why:
                         yield Finding(
                             rule_id="DOCKER_LATEST_TAG",
@@ -120,10 +160,11 @@ def scan(ctx) -> Iterator[Finding]:
                         )
 
             if low.startswith("user "):
-                if low.split()[1:2] not in ([], ["root"], ["0"]):
-                    has_user = True
+                parts = line.split(None, 1)
+                if len(parts) == 2:
+                    final_user_root = _user_is_root(parts[1].split()[0])
 
-            if re.match(r"add\s+https?://", low):
+            if re.match(r"add\s+(--\S+\s+)*https?://", low):
                 yield Finding(
                     rule_id="DOCKER_ADD_REMOTE",
                     title="ADD used to fetch a remote URL",
@@ -132,10 +173,10 @@ def scan(ctx) -> Iterator[Finding]:
                     message="ADD with a URL fetches unverified content at build time.",
                     remediation="Use `curl`/`wget` with a pinned URL and verify a "
                                 "checksum, or vendor the file and use COPY.",
-                    evidence=line, cwe="CWE-494",
+                    evidence=line[:160], cwe="CWE-494",
                 )
 
-            if re.search(r"(curl|wget)\b.*\|\s*(sudo\s+)?(sh|bash)", low):
+            if re.search(r"(curl|wget)\b.*\|\s*(sudo\s+)?(sh|bash)\b", low):
                 yield Finding(
                     rule_id="DOCKER_CURL_PIPE_SHELL",
                     title="Remote script piped into a shell",
@@ -145,12 +186,10 @@ def scan(ctx) -> Iterator[Finding]:
                             "unverified code during the build.",
                     remediation="Download to a file, verify its checksum/signature, "
                                 "then execute it.",
-                    evidence=line, cwe="CWE-494",
+                    evidence=line[:160], cwe="CWE-494",
                 )
 
-            if re.match(r"(env|arg)\s", low) and re.search(
-                r"(?i)(password|secret|token|api[_-]?key|private[_-]?key)\s*=", line
-            ):
+            if re.match(r"(env|arg)\s", low) and _SECRET_NAME.search(line):
                 yield Finding(
                     rule_id="DOCKER_SECRET_IN_ENV",
                     title="Secret baked into an image layer",
@@ -159,19 +198,19 @@ def scan(ctx) -> Iterator[Finding]:
                     message="Secrets in ENV/ARG persist in image layers and history.",
                     remediation="Pass secrets at runtime, or use BuildKit "
                                 "`--mount=type=secret` which is not persisted.",
-                    evidence=line, cwe="CWE-798",
+                    evidence=_redact_assignments(line)[:160], cwe="CWE-798",
                 )
 
-        if last_from_line and not has_user:
+        if last_from_line and final_user_root:
             yield Finding(
                 rule_id="DOCKER_RUNS_AS_ROOT",
                 title="Container runs as root",
                 severity=Severity.HIGH,
                 file=name, line=last_from_line,
-                message="No non-root USER is set, so the container (and anything "
-                        "that breaks out of the app) runs as root.",
+                message="The final stage has no non-root USER, so the container "
+                        "(and anything that breaks out of the app) runs as root.",
                 remediation="Create and switch to an unprivileged user before the "
                             "entrypoint:\n    RUN useradd --system --uid 10001 app\n"
                             "    USER app",
-                evidence="(no USER instruction found)", cwe="CWE-250",
+                evidence="(no non-root USER in the final stage)", cwe="CWE-250",
             )

@@ -29,6 +29,19 @@ _PATTERNS = [
      re.compile(r"\bAIza[0-9A-Za-z_\-]{35}\b"), Severity.HIGH),
     ("SECRET_OPENAI", "OpenAI / Anthropic style key",
      re.compile(r"\b(sk-ant-|sk-)[A-Za-z0-9_\-]{20,}\b"), Severity.HIGH),
+    ("SECRET_GITHUB_FINE_PAT", "GitHub fine-grained token",
+     re.compile(r"\bgithub_pat_[A-Za-z0-9_]{22,}\b"), Severity.CRITICAL),
+    ("SECRET_GITLAB_PAT", "GitLab personal access token",
+     re.compile(r"\bglpat-[A-Za-z0-9_\-]{20,}\b"), Severity.CRITICAL),
+    ("SECRET_NPM_TOKEN", "npm access token",
+     re.compile(r"\bnpm_[A-Za-z0-9]{36}\b"), Severity.CRITICAL),
+    ("SECRET_SENDGRID", "SendGrid API key",
+     re.compile(r"\bSG\.[A-Za-z0-9_\-]{22}\.[A-Za-z0-9_\-]{43}\b"), Severity.HIGH),
+    ("SECRET_HUGGINGFACE", "Hugging Face token",
+     re.compile(r"\bhf_[A-Za-z0-9]{34}\b"), Severity.HIGH),
+    ("SECRET_SLACK_WEBHOOK", "Slack incoming webhook URL",
+     re.compile(r"hooks\.slack\.com/services/T[A-Z0-9]+/B[A-Z0-9]+/[A-Za-z0-9]{20,}"),
+     Severity.HIGH),
     ("SECRET_JWT", "Hardcoded JWT",
      re.compile(r"\beyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\b"),
      Severity.MEDIUM),
@@ -83,6 +96,16 @@ def _is_ignored(rel_path: str, scan_tests: bool) -> bool:
     return bool(_TESTISH_FILE.match(parts[-1]))
 
 
+def _accept(rule_id: str, text: str) -> bool:
+    """Extra checks for patterns that are broad enough to hit ordinary words."""
+    if rule_id == "SECRET_OPENAI" and not text.startswith("sk-ant-"):
+        tail = text[3:]
+        # `sk-learn-something-long` is a slug, not a key: real keys mix digits
+        # and letters with high entropy.
+        return any(c.isdigit() for c in tail) and _shannon_entropy(tail) >= 3.5
+    return True
+
+
 def _redact(value: str) -> str:
     if len(value) <= 8:
         return "****"
@@ -112,12 +135,14 @@ def scan(ctx) -> Iterator[Finding]:
         if not text:
             continue
         for lineno, line in enumerate(text.splitlines(), start=1):
-            if len(line) > 1000:
-                continue
+            # Very long lines (minified bundles) only skip the generic heuristic:
+            # provider-signature patterns still run, otherwise padding a line
+            # past 1000 chars would hide a real key.
+            long_line = len(line) > 1000
             matched_rules = set()
             for rule_id, title, rx, sev in _PATTERNS:
                 m = rx.search(line)
-                if not m:
+                if not m or not _accept(rule_id, m.group(0)):
                     continue
                 matched_rules.add(rule_id)
                 yield Finding(
@@ -132,7 +157,7 @@ def scan(ctx) -> Iterator[Finding]:
                     cwe="CWE-798",
                 )
             # Generic assignment heuristic (skip if a specific rule already hit).
-            if matched_rules:
+            if matched_rules or long_line:
                 continue
             am = _ASSIGN.search(line)
             if am:
