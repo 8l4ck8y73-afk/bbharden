@@ -27,8 +27,13 @@ _PATTERNS = [
      re.compile(r"\b[sr]k_live_[A-Za-z0-9]{20,}\b"), Severity.CRITICAL),
     ("SECRET_GOOGLE_API", "Google API key",
      re.compile(r"\bAIza[0-9A-Za-z_\-]{35}\b"), Severity.HIGH),
+    # Anthropic / OpenAI key shapes only. A bare `sk-<words>` also matches SSH
+    # security-key algorithm names (`sk-ssh-ed25519-cert-v01@openssh.com`), which
+    # is what real-world testing on neovim's syntax files turned up.
     ("SECRET_OPENAI", "OpenAI / Anthropic style key",
-     re.compile(r"\b(sk-ant-|sk-)[A-Za-z0-9_\-]{20,}\b"), Severity.HIGH),
+     re.compile(r"\b(?:sk-ant-[A-Za-z0-9_\-]{20,}"
+                r"|sk-(?:proj|svcacct|admin)-[A-Za-z0-9_\-]{20,}"
+                r"|sk-[A-Za-z0-9]{32,})\b"), Severity.HIGH),
     ("SECRET_GITHUB_FINE_PAT", "GitHub fine-grained token",
      re.compile(r"\bgithub_pat_[A-Za-z0-9_]{22,}\b"), Severity.CRITICAL),
     ("SECRET_GITLAB_PAT", "GitLab personal access token",
@@ -98,10 +103,10 @@ def _is_ignored(rel_path: str, scan_tests: bool) -> bool:
 
 def _accept(rule_id: str, text: str) -> bool:
     """Extra checks for patterns that are broad enough to hit ordinary words."""
-    if rule_id == "SECRET_OPENAI" and not text.startswith("sk-ant-"):
-        tail = text[3:]
-        # `sk-learn-something-long` is a slug, not a key: real keys mix digits
-        # and letters with high entropy.
+    if rule_id == "SECRET_OPENAI":
+        tail = text.split("-", 2)[-1] if text.count("-") >= 2 else text[3:]
+        # Real keys are high-entropy and mix digits with letters; a long
+        # lowercase slug is not a key.
         return any(c.isdigit() for c in tail) and _shannon_entropy(tail) >= 3.5
     return True
 
