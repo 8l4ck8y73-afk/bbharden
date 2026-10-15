@@ -28,6 +28,12 @@ _MAX_BYTES = 2_000_000  # skip files larger than ~2MB for text scanning
 class RepoContext:
     root: Path
     max_bytes: int = _MAX_BYTES
+    # Opt-in: query OSV.dev for known CVEs (sends package names+versions only).
+    use_osv: bool = False
+    # Injectable lookup (tests); None means "use bbharden.osv.query".
+    osv_query: object = None
+    # Non-fatal notes surfaced to the user (e.g. "OSV unreachable").
+    notes: list = field(default_factory=list)
     _text_cache: dict = field(default_factory=dict)
 
     def rel(self, path: Path) -> str:

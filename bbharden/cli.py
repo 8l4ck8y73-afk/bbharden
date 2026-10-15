@@ -36,8 +36,12 @@ def cmd_scan(args) -> int:
     if not root.exists():
         print(f"error: target not found: {root}", file=sys.stderr)
         return 2
-    ctx = RepoContext(root=root)
+    ctx = RepoContext(root=root, use_osv=args.osv)
     findings = _run_scan(ctx, args.only, args.skip)
+    # Non-fatal notes (e.g. OSV unreachable) go to stderr so they never corrupt
+    # machine-readable output on stdout (SARIF / JSON).
+    for note in ctx.notes:
+        print(f"note: {note}", file=sys.stderr)
 
     fmt = args.format
     rendered = {
@@ -136,6 +140,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--output", "-o", help="write the report to a file")
     s.add_argument("--fail-on", choices=_SEV_ORDER, default=None,
                    help="exit non-zero if a finding at or above this severity exists")
+    s.add_argument("--osv", action="store_true",
+                   help="match pinned dependencies against OSV.dev for known CVEs "
+                        "(needs network; sends package names+versions only)")
     s.set_defaults(func=cmd_scan)
 
     f = sub.add_parser("fix", parents=[common],
