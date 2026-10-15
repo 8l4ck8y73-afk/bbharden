@@ -38,6 +38,8 @@ class RepoContext:
     # Glob patterns (relative to root, '/'-separated) to leave out of every scan.
     # A bare directory name such as "examples" excludes everything beneath it.
     exclude: list = field(default_factory=list)
+    # Real contact address for a generated SECURITY.md (never invented).
+    security_email: object = None
     _text_cache: dict = field(default_factory=dict)
 
     def rel(self, path: Path) -> str:

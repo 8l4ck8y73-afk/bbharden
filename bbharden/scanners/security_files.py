@@ -18,7 +18,7 @@ _SECURITY_MD = """\
 Please report security issues privately. Do **not** open a public issue for a
 vulnerability.
 
-- Email: security@example.com
+- Email: {email}
 - Or use GitHub's private vulnerability reporting ("Report a vulnerability"
   under the Security tab).
 
@@ -58,6 +58,20 @@ _GITIGNORE_SECRETS = [
 def scan(ctx) -> Iterator[Finding]:
     # 1. SECURITY.md
     if not ctx.find("SECURITY.md", ".github/SECURITY.md", "docs/SECURITY.md"):
+        email = getattr(ctx, "security_email", None)
+        if email:
+            # `.replace` (not str.format) so literal braces in the template can
+            # never break generation.
+            content = _SECURITY_MD.replace("{email}", email)
+            how = ("Add a SECURITY.md describing how to report issues privately. "
+                   "`bbharden fix` will create one using your --security-email.")
+        else:
+            # Never invent a contact address: a fake one in a published policy is
+            # worse than no policy. Report the gap, but offer no auto-fix.
+            content = None
+            how = ("Add a SECURITY.md describing how to report issues privately. "
+                   "Re-run `bbharden fix --security-email you@example.org` to have "
+                   "it generated with your real contact address.")
         yield Finding(
             rule_id="HYGIENE_NO_SECURITY_MD",
             title="No SECURITY.md disclosure policy",
@@ -65,9 +79,8 @@ def scan(ctx) -> Iterator[Finding]:
             file="SECURITY.md", line=1,
             message="The repository has no security policy, so reporters have no "
                     "private channel to disclose vulnerabilities.",
-            remediation="Add a SECURITY.md describing how to report issues "
-                        "privately. `bbharden fix` can create a template.",
-            fix_path="SECURITY.md", fix_content=_SECURITY_MD,
+            remediation=how,
+            fix_path="SECURITY.md", fix_content=content,
         )
 
     # 2. Dependabot

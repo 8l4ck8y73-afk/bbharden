@@ -123,6 +123,15 @@ bbharden fix .             # write the fixes
 This creates the missing hygiene files directly. Pair it with a bot step in CI
 to open a hardening pull request automatically.
 
+`SECURITY.md` needs a real contact address, and `bbharden` will never invent one:
+
+```bash
+bbharden fix . --security-email you@example.org
+# or: export BBHARDEN_SECURITY_EMAIL=you@example.org
+```
+
+Without an address the missing policy is still reported, but no file is created.
+
 ## 🤖 GitHub Action
 
 Drop this in `.github/workflows/security.yml`:
@@ -167,6 +176,7 @@ jobs:
       - uses: actions/checkout@v4
       - run: |
           python3 -m bbharden.cli fix . \
+            --security-email you@example.org \
             --summary "$RUNNER_TEMP/pr-body.md" --require-changes || \
             [ $? -eq 3 ] && echo "nothing to fix"
       - uses: peter-evans/create-pull-request@v6

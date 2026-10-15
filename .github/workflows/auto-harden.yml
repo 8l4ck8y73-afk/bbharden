@@ -24,6 +24,7 @@ jobs:
         run: |
           set +e
           python3 -m bbharden.cli fix . \
+            --security-email 8l4ck8y73@gmail.com \
             --summary "$RUNNER_TEMP/pr-body.md" \
             --require-changes
           code=$?
