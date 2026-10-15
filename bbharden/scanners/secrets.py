@@ -58,8 +58,29 @@ _PLACEHOLDER = re.compile(
     r"[0]{6,}|[a-f0-9]{0,6})$"
 )
 
-_IGNORE_NAME = re.compile(r"(?i)(\.lock$|\.min\.js$|package-lock\.json$|yarn\.lock$|"
-                          r"\.map$|test|spec|fixture|example|sample|mock)")
+# Generated / vendored artefacts that are never worth scanning.
+_IGNORE_FILE = re.compile(r"(?i)(\.lock$|\.min\.js$|package-lock\.json$|yarn\.lock$|\.map$)")
+
+# Directories that conventionally hold fake credentials. Matched as WHOLE path
+# components — never as substrings, which would also skip `latest/`, `contest/`
+# or `attestation/` and silently hide real leaks.
+_TESTISH_DIRS = {
+    "test", "tests", "__tests__", "spec", "specs", "fixture", "fixtures",
+    "mock", "mocks", "example", "examples", "sample", "samples", "testdata",
+}
+# test_foo.py, foo_test.go, foo.test.js, foo.spec.ts
+_TESTISH_FILE = re.compile(r"(?i)^(test_.*|.*_test\.\w+|.*\.(test|spec)\.\w+)$")
+
+
+def _is_ignored(rel_path: str, scan_tests: bool) -> bool:
+    if _IGNORE_FILE.search(rel_path):
+        return True
+    if scan_tests:
+        return False
+    parts = rel_path.replace("\\", "/").split("/")
+    if any(p.lower() in _TESTISH_DIRS for p in parts[:-1]):
+        return True
+    return bool(_TESTISH_FILE.match(parts[-1]))
 
 
 def _redact(value: str) -> str:
@@ -85,7 +106,7 @@ def scan(ctx) -> Iterator[Finding]:
     )
     for path in ctx.text_files():
         name = ctx.rel(path)
-        if _IGNORE_NAME.search(name):
+        if _is_ignored(name, getattr(ctx, "scan_tests", False)):
             continue
         text = ctx.read_text(path)
         if not text:

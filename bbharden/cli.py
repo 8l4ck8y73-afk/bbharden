@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 from typing import List
 
-from . import __version__, report
+from . import __version__, pin as pin_mod, report, suppress
 from .context import RepoContext
 from .findings import Finding, Severity
 from .remediate import apply as apply_fixes
@@ -31,13 +31,18 @@ def _resolve_email(args):
     return email or None
 
 
-def _run_scan(ctx: RepoContext, only, skip) -> List[Finding]:
+def _run_scan(ctx: RepoContext, only, skip, baseline=None) -> List[Finding]:
     findings: List[Finding] = []
     for _name, fn in enabled_scanners(only, skip):
         try:
             findings.extend(fn(ctx))
         except Exception as exc:  # noqa: BLE001 — one scanner must not kill the run
             print(f"warning: scanner '{_name}' failed: {exc}", file=sys.stderr)
+    findings, counts = suppress.apply(ctx, findings, baseline)
+    if counts["inline"] or counts["baseline"]:
+        # stderr, so machine-readable stdout stays clean.
+        print(f"note: suppressed {counts['inline']} inline and "
+              f"{counts['baseline']} baseline finding(s).", file=sys.stderr)
     return findings
 
 
@@ -52,8 +57,15 @@ def cmd_scan(args) -> int:
         print(f"error: target not found: {root}", file=sys.stderr)
         return 2
     ctx = RepoContext(root=root, use_osv=args.osv, exclude=args.exclude,
-                      security_email=_resolve_email(args))
-    findings = _run_scan(ctx, args.only, args.skip)
+                      security_email=_resolve_email(args),
+                      scan_tests=args.scan_tests)
+    baseline = suppress.load_baseline(args.baseline) if args.baseline else None
+    findings = _run_scan(ctx, args.only, args.skip, baseline)
+    if args.write_baseline:
+        n = suppress.write_baseline(args.write_baseline, findings)
+        print(f"wrote baseline with {n} finding(s) to {args.write_baseline}",
+              file=sys.stderr)
+        return 0
     # Non-fatal notes (e.g. OSV unreachable) go to stderr so they never corrupt
     # machine-readable output on stdout (SARIF / JSON).
     for note in ctx.notes:
@@ -84,38 +96,59 @@ def cmd_scan(args) -> int:
 def cmd_fix(args) -> int:
     root = Path(args.target).resolve()
     ctx = RepoContext(root=root, exclude=args.exclude,
-                      security_email=_resolve_email(args))
-    findings = _run_scan(ctx, args.only, args.skip)
+                      security_email=_resolve_email(args),
+                      scan_tests=args.scan_tests)
+    baseline = suppress.load_baseline(args.baseline) if args.baseline else None
+    findings = _run_scan(ctx, args.only, args.skip, baseline)
     actions = apply_fixes(root, findings, dry_run=args.dry_run)
+
+    pins = []
+    if args.pin_actions:
+        pins = pin_mod.pin_workflows(ctx, dry_run=args.dry_run)
 
     if args.summary:
         Path(args.summary).write_text(
-            _fix_summary_md(actions, findings), encoding="utf-8"
+            _fix_summary_md(actions, findings, pins), encoding="utf-8"
         )
 
-    if not actions:
+    for r in pins:
+        for action, ref, why in r.skipped:
+            print(f"note: could not pin {action}@{ref} in {r.path}: {why}",
+                  file=sys.stderr)
+
+    pinned_total = sum(len(r.pinned) for r in pins)
+    if not actions and not pinned_total:
         print("No machine-applicable fixes available.")
         # Signal "nothing to do" so CI can skip opening an empty PR.
         return 0 if not args.require_changes else 3
 
     verb = "Planned" if args.dry_run else "Applied"
-    print(f"{verb} {len(actions)} fix(es):")
+    n_fixes = len(actions) + sum(1 for r in pins if r.changed)
+    print(f"{verb} {n_fixes} fix(es):")
     for path, action in actions:
         print(f"  {action}: {path}")
+    for r in pins:
+        if r.changed:
+            what = "would pin" if args.dry_run else "pinned"
+            print(f"  {what} {len(r.pinned)} action(s) to commit SHAs: {r.path}")
+            for action, ref, sha in r.pinned:
+                print(f"      {action}@{ref} -> {sha[:12]}")
     if args.dry_run:
         print("\n(dry run — nothing was written; re-run without --dry-run to apply)")
     return 0
 
 
-def _fix_summary_md(actions, findings) -> str:
+def _fix_summary_md(actions, findings, pins=()) -> str:
     from .remediate import applicable
     by_path = {(f.fix_path or f.file): f for f in applicable(findings)}
+    changed_pins = [r for r in pins if r.changed]
+    total = len(actions) + len(changed_pins)
     lines = ["## 🛡️ BlackByte Hardener — automated hardening", ""]
-    if not actions:
+    if not total:
         lines.append("No machine-applicable fixes were needed. ✅")
         return "\n".join(lines) + "\n"
     lines.append(
-        f"This PR applies **{len(actions)}** hardening fix(es) that BlackByte "
+        f"This PR applies **{total}** hardening fix(es) that BlackByte "
         "Hardener can make automatically:\n"
     )
     for path, action in actions:
@@ -125,6 +158,11 @@ def _fix_summary_md(actions, findings) -> str:
                          f"(`{f.rule_id}`)")
         else:
             lines.append(f"- **{action.capitalize()} `{path}`**")
+    for r in changed_pins:
+        lines.append(f"- **Pinned {len(r.pinned)} action(s) to commit SHAs in "
+                     f"`{r.path}`** (`CI_ACTION_UNPINNED`)")
+        for action, ref, sha in r.pinned:
+            lines.append(f"  - `{action}@{ref}` → `{sha[:12]}…`")
     lines.append("")
     lines.append("Review the diff before merging. Findings that need human "
                  "judgment (secrets to rotate, Dockerfile/CI changes) are reported "
@@ -154,6 +192,12 @@ def build_parser() -> argparse.ArgumentParser:
                         help="contact address for a generated SECURITY.md "
                              "(or set $BBHARDEN_SECURITY_EMAIL); without it, "
                              "SECURITY.md is reported but not auto-created")
+    common.add_argument("--baseline", metavar="FILE",
+                        help="hide the findings recorded in this baseline file "
+                             "(see `scan --write-baseline`)")
+    common.add_argument("--scan-tests", action="store_true",
+                        help="also scan test/fixture/example paths for secrets "
+                             "(skipped by default; they usually hold fake keys)")
     common.add_argument("--exclude", action="append", default=[], metavar="GLOB",
                         help="leave paths out of the scan (repeatable), e.g. "
                              "--exclude examples --exclude 'docs/*.md'")
@@ -167,6 +211,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--osv", action="store_true",
                    help="match pinned dependencies against OSV.dev for known CVEs "
                         "(needs network; sends package names+versions only)")
+    s.add_argument("--write-baseline", metavar="FILE",
+                   help="record today's findings as accepted and exit 0; later "
+                        "runs with --baseline FILE then fail only on NEW findings")
     s.set_defaults(func=cmd_scan)
 
     f = sub.add_parser("fix", parents=[common],
@@ -175,6 +222,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="show what would change without writing")
     f.add_argument("--summary", metavar="PATH",
                    help="write a markdown summary of the changes (for PR bodies)")
+    f.add_argument("--pin-actions", action="store_true",
+                   help="pin GitHub Actions in .github/workflows to commit SHAs "
+                        "(resolved read-only via `git ls-remote`; needs network). "
+                        "NB: a workflow-modifying PR needs a PAT, not GITHUB_TOKEN")
     f.add_argument("--require-changes", action="store_true",
                    help="exit 3 when there is nothing to fix (lets CI skip the PR)")
     f.set_defaults(func=cmd_fix)

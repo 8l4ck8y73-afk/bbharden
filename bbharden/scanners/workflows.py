@@ -94,6 +94,23 @@ def scan(ctx) -> Iterator[Finding]:
                     evidence=raw.strip()[:120], cwe="CWE-94",
                 )
 
+        if not any(re.match(r"\s*permissions\s*:", ln) for ln in lines):
+            yield Finding(
+                rule_id="CI_NO_PERMISSIONS",
+                title="Workflow does not restrict GITHUB_TOKEN permissions",
+                severity=Severity.MEDIUM,
+                file=name, line=1,
+                message="No `permissions:` block at workflow or job level, so the "
+                        "token gets the repository's default scope (often "
+                        "read/write on everything). A compromised step or action "
+                        "inherits all of it.",
+                remediation="Add least-privilege permissions at the top level, "
+                            "e.g. `permissions:\n  contents: read`, and grant extra "
+                            "scopes per job only where needed. Not auto-applied: a "
+                            "too-narrow default can break the workflow.",
+                evidence="(no permissions: block)", cwe="CWE-250",
+            )
+
         if uses_pull_request_target and checks_out_code:
             yield Finding(
                 rule_id="CI_PR_TARGET_CHECKOUT",
