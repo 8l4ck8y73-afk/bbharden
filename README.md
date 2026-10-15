@@ -85,6 +85,8 @@ Summary: 🟥 2 critical  🟧 6 high  🟨 4 medium  🟦 4 low  ⬜ 1 info
 | **dockerfile** | runs as root, unpinned / `:latest` base image (understands `scratch`, multi-stage aliases, `ARG` defaults and digests), secrets in `ENV`, `curl \| bash`, `ADD <url>` |
 | **workflows** | `pull_request_target` + checkout of the PR head, script injection via `${{ github.event.* }}` / `github.head_ref` in `run:` and `github-script` (indentation-aware: the `env:` fix is not flagged), unpinned actions, missing or `write-all` `permissions:` |
 | **dependencies** | unpinned pip / npm versions (extras, markers, `==1.*`, `1.x`), npm install-time lifecycle scripts; with `--osv`, CVEs for direct pins **and lockfiles** (`package-lock.json`, `Pipfile.lock`, `poetry.lock`) |
+| **iac** | Kubernetes (privileged, host namespaces, `hostPath`, root, missing limits/probes, mutable images, secrets in `env`), Docker Compose (`privileged`, `docker.sock`, host network, secrets), Terraform (public buckets/ACLs, `0.0.0.0/0` ingress, unencrypted storage, hardcoded credentials) |
+| **custom** | your own regex rules from `.bbharden.toml` (see below) |
 | **security-files** | missing `SECURITY.md`, missing Dependabot, a `.env` that is tracked by git or not ignored, weak `.gitignore`, Dependabot config generated only for the ecosystems you actually use — **all auto-fixable** |
 
 Run a subset, or leave paths out (repeatable; a bare directory name excludes
@@ -97,7 +99,39 @@ bbharden scan . --exclude examples --exclude 'docs/*.md'
 ```
 
 Test, fixture and example paths are skipped by the secrets scanner (they usually
-hold fake keys); add `--scan-tests` to include them.
+hold fake keys); add `--scan-tests` to include them. The IaC scanner skips the same paths.
+
+## ⚙️ Policy file (`.bbharden.toml`)
+
+Commit one file to make results reproducible across a team (needs Python ≥ 3.11):
+
+```toml
+fail_on = "high"
+skip = ["dependencies"]
+
+[severity]                 # re-rate a rule for your context
+DOCKER_RUNS_AS_ROOT = "low"
+
+[[rule]]                   # your own checks
+id = "ACME_INTERNAL_HOST"
+title = "Internal hostname in code"
+severity = "medium"
+pattern = 'corp\\.internal'
+globs = ["*.py", "*.js"]
+```
+
+> **Trust note:** a policy file inside a repo you are *auditing* can hide findings.
+> bbharden announces when one is applied; use `--no-config` for third-party code
+> (the batch script does this automatically).
+
+## 📦 SBOM
+
+```bash
+bbharden sbom . -o sbom.cdx.json            # CycloneDX 1.5 (validated against the official schema)
+bbharden sbom . --osv -o sbom.cdx.json      # embeds known vulnerabilities (needs network)
+```
+
+Set `SOURCE_DATE_EPOCH` for byte-reproducible output.
 
 ## 🙈 Suppressions & baselines
 
@@ -242,7 +276,10 @@ bbharden scan . --format console          # human-readable (default)
 bbharden scan . --format markdown -o report.md   # PR comment / docs
 bbharden scan . --format sarif   -o out.sarif    # GitHub code scanning
 bbharden scan . --format json    -o out.json     # pipe into other tools
+bbharden scan . --format html    -o report.html  # self-contained, client-ready (no scripts, strict CSP)
 ```
+
+JSON, SARIF and HTML map findings to OWASP CI/CD Top 10, ISO 27001:2022 Annex A, CIS Docker, Pod Security Standards and OpenSSF Scorecard. The mapping is **indicative and not a statement of compliance**.
 
 Gate your pipeline:
 
@@ -296,8 +333,10 @@ bbharden is meant to be pointed at repositories you do not trust, so:
 - [x] Auto-open hardening PRs (GitHub Action)
 - [x] Live CVE matching via OSV.dev (`--osv`)
 - [ ] Lockfile support (`package-lock.json`, `poetry.lock`, `Pipfile.lock`) for transitive CVEs
-- [ ] Terraform / Kubernetes manifest hardening
-- [ ] Custom rule packs (`.bbharden.yml`)
+- [x] Terraform / Kubernetes / Compose hardening
+- [x] Policy file and custom rules (`.bbharden.toml`)
+- [x] CycloneDX SBOM and HTML report
+- [ ] Git-history secret scanning, opt-in key verification
 - [x] Baseline file and inline suppressions
 - [x] SHA-pin GitHub Actions (`fix --pin-actions`)
 

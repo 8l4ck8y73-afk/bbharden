@@ -22,7 +22,7 @@ from typing import Iterator
 _IGNORE_DIRS = {
     ".git", "node_modules", ".venv", "venv", "__pycache__", ".mypy_cache",
     ".pytest_cache", "dist", "build", ".tox", ".idea", ".next", "vendor",
-    "site-packages",
+    "site-packages", ".terraform", ".terragrunt-cache",
 }
 
 # Extensions treated as binary / not worth reading as text.
@@ -78,6 +78,8 @@ class RepoContext:
     exclude: list = field(default_factory=list)
     # Real contact address for a generated SECURITY.md (never invented).
     security_email: object = None
+    # [[custom_rule]] entries from .bbharden.toml (see bbharden.config).
+    custom_rules: list = field(default_factory=list)
     # By default the secrets scanner skips test/fixture/example paths (they hold
     # fake credentials); set True to scan them too.
     scan_tests: bool = False

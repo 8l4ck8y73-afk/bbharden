@@ -7,7 +7,7 @@ import json
 import re
 from typing import List
 
-from . import __version__
+from . import __version__, compliance
 from .findings import Finding, Severity
 from .suppress import fingerprint
 
@@ -126,7 +126,8 @@ def sarif(findings: List[Finding], root: str) -> str:
                     "security-severity": _security_severity(f.severity),
                     # GitHub surfaces CWE links from `external/cwe/...` tags.
                     "tags": ["security"] + (
-                        [f"external/cwe/{f.cwe.lower()}"] if f.cwe else []),
+                        [f"external/cwe/{f.cwe.lower()}"] if f.cwe else [])
+                    + compliance.references(f.rule_id),
                 },
             }
         results.append({
@@ -166,7 +167,9 @@ def as_json(findings: List[Finding], root: str) -> str:
         "version": __version__,
         "root": root,
         "summary": {s.value: counts[s] for s in Severity},
-        "findings": [f.to_dict() for f in _sorted(findings)],
+        "findings": [dict(f.to_dict(), references=compliance.references(f.rule_id))
+                     for f in _sorted(findings)],
+        "references_note": compliance.DISCLAIMER,
     }, indent=2)
 
 
@@ -179,3 +182,128 @@ def _security_severity(sev: Severity) -> str:
         Severity.LOW: "3.0",
         Severity.INFO: "1.0",
     }[sev]
+
+
+# ------------------------------------------------------------------ HTML
+_CSS = """
+:root{--bg:#fff;--fg:#1a1d23;--mut:#5b6472;--card:#f5f7fa;--line:#dde2ea;--crit:#b3261e;
+--high:#c2570a;--med:#8a6d00;--low:#1a5fb4;--info:#5b6472}
+@media (prefers-color-scheme:dark){:root{--bg:#12151a;--fg:#e6e9ef;--mut:#9aa4b2;--card:#1b2028;
+--line:#2c3340;--crit:#ff8a80;--high:#ffab6b;--med:#e6c54f;--low:#7fb2ff;--info:#9aa4b2}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);
+font:15px/1.55 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+main{max-width:980px;margin:0 auto;padding:28px 16px 60px}
+h1{font-size:1.7rem;margin:0 0 4px}h2{font-size:1.2rem;margin:34px 0 10px}
+.mut{color:var(--mut)}.card{background:var(--card);border:1px solid var(--line);
+border-radius:10px;padding:14px 16px;margin:10px 0}
+.bars{display:grid;gap:6px;margin:10px 0}.bar{display:grid;grid-template-columns:80px 1fr 40px;
+gap:10px;align-items:center}.bar i{display:block;height:12px;border-radius:6px;min-width:2px}
+.sev{font-weight:600;text-transform:capitalize}
+.critical{color:var(--crit)}.high{color:var(--high)}.medium{color:var(--med)}.low{color:var(--low)}.info{color:var(--info)}
+.bg-critical{background:var(--crit)}.bg-high{background:var(--high)}.bg-medium{background:var(--med)}
+.bg-low{background:var(--low)}.bg-info{background:var(--info)}
+details{border:1px solid var(--line);border-radius:10px;margin:10px 0;background:var(--card)}
+summary{cursor:pointer;padding:12px 16px;font-weight:600}
+.body{padding:0 16px 14px}.tag{display:inline-block;border:1px solid var(--line);border-radius:999px;
+padding:1px 9px;margin:2px 4px 2px 0;font-size:.78rem;color:var(--mut)}
+table{border-collapse:collapse;width:100%;font-size:.88rem;margin-top:8px}
+td,th{border-top:1px solid var(--line);padding:6px 8px;text-align:left;vertical-align:top;
+word-break:break-word}code{font:.85em ui-monospace,Menlo,Consolas,monospace}
+ol li{margin:4px 0}.fix{white-space:pre-wrap}footer{margin-top:40px;font-size:.82rem;color:var(--mut)}
+@media print{details{break-inside:avoid}details>*{display:block}}
+"""
+
+
+def _e(s) -> str:
+    return html.escape(_clean(s), quote=True)
+
+
+def _rich(s) -> str:
+    """Escape first, then turn `code` spans into <code> (safe: input is inert)."""
+    return re.sub(r"`([^`\n]+)`", r"<code>\1</code>", _e(s))
+
+
+def html_report(findings: List[Finding], root: str) -> str:
+    """Self-contained HTML report (no scripts, no external requests, all text escaped)."""
+    import datetime as _dt
+    import os
+    from collections import OrderedDict
+
+    counts = summary_counts(findings)
+    name = os.path.basename(str(root).rstrip("/\\")) or str(root)
+    epoch = os.environ.get("SOURCE_DATE_EPOCH")
+    try:
+        when = _dt.datetime.fromtimestamp(int(epoch), _dt.timezone.utc) if epoch \
+            else _dt.datetime.now(_dt.timezone.utc)
+    except (ValueError, OverflowError, OSError):
+        when = _dt.datetime.now(_dt.timezone.utc)
+
+    groups: "OrderedDict[str, List[Finding]]" = OrderedDict()
+    for f in _sorted(findings):
+        groups.setdefault(f.rule_id, []).append(f)
+
+    o = ['<!doctype html><html lang="en"><head><meta charset="utf-8">',
+         '<meta name="viewport" content="width=device-width,initial-scale=1">',
+         # Belt and braces: even if some text escaped badly, nothing can execute
+         # or phone home from this document.
+         '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; '
+         'style-src \'unsafe-inline\'; img-src data:">',
+         f"<title>Security report - {_e(name)}</title><style>{_CSS}</style></head><body><main>",
+         f"<h1>Security hardening report</h1>",
+         f'<div class="mut">Target: <code>{_e(name)}</code> &middot; '
+         f'{when.strftime("%Y-%m-%d")} &middot; BlackByte Hardener v{_e(__version__)}</div>']
+
+    total = len(findings)
+    o.append("<h2>Summary</h2><div class=\"card\">")
+    if not total:
+        o.append("<p><strong>No findings.</strong> This scan found nothing to report. "
+                 "A clean scan is not a guarantee: it covers only what these checks can see.</p>")
+    else:
+        worst = next((s for s in Severity if counts[s]), None)
+        urgent = counts[Severity.CRITICAL] + counts[Severity.HIGH]
+        o.append(f"<p><strong>{total}</strong> finding(s) across <strong>{len(groups)}</strong> "
+                 f"check(s); <strong>{urgent}</strong> rated high or critical. "
+                 f"Highest severity: <span class=\"sev {worst.value}\">{worst.value}</span>.</p>")
+        peak = max(counts.values()) or 1
+        o.append('<div class="bars">')
+        for s in Severity:
+            w = int(100 * counts[s] / peak)
+            o.append(f'<div class="bar"><span class="sev {s.value}">{s.value}</span>'
+                     f'<span><i class="bg-{s.value}" style="width:{w}%"></i></span>'
+                     f'<span>{counts[s]}</span></div>')
+        o.append("</div>")
+    o.append("</div>")
+
+    if total:
+        o.append("<h2>Fix first</h2><div class=\"card\"><ol>")
+        ranked = sorted(groups.items(), key=lambda kv: (-kv[1][0].severity.rank, -len(kv[1])))
+        for rid, fs in ranked[:5]:
+            o.append(f'<li><span class="sev {fs[0].severity.value}">{fs[0].severity.value}</span> '
+                     f"&mdash; {_e(fs[0].title)} <span class=\"mut\">({len(fs)}&times;, "
+                     f"<code>{_e(rid)}</code>)</span></li>")
+        o.append("</ol></div><h2>Details</h2>")
+        for rid, fs in groups.items():
+            f0 = fs[0]
+            refs = compliance.references(rid) + ([f0.cwe] if f0.cwe else [])
+            autofix = " &middot; auto-fix available" if any(x.has_autofix for x in fs) else ""
+            o.append(f'<details><summary><span class="sev {f0.severity.value}">'
+                     f"{f0.severity.value}</span> &middot; {_e(f0.title)} "
+                     f'<span class="mut">&middot; {len(fs)}&times;{autofix}</span></summary><div class="body">')
+            o.append(f"<p>{_rich(f0.message)}</p>")
+            o.append(f'<p><strong>How to fix:</strong> <span class="fix">{_rich(f0.remediation)}</span></p>')
+            if refs:
+                o.append("<p>" + "".join(f'<span class="tag">{_e(r)}</span>' for r in refs) + "</p>")
+            o.append("<table><tr><th>Location</th><th>Evidence</th></tr>")
+            for f in fs[:50]:
+                o.append(f"<tr><td><code>{_e(f.file)}:{f.line}</code></td>"
+                         f"<td><code>{_e(f.evidence)}</code></td></tr>")
+            if len(fs) > 50:
+                o.append(f'<tr><td colspan="2" class="mut">+ {len(fs) - 50} more</td></tr>')
+            o.append(f'</table><div class="mut" style="margin-top:6px">Rule <code>{_e(rid)}</code></div>'
+                     "</div></details>")
+
+    o.append(f"<footer><p>{_e(compliance.DISCLAIMER)} Secret values are never printed: "
+             "evidence is redacted. This report reflects the repository contents at scan "
+             "time; it does not cover git history, running systems or runtime behaviour.</p>"
+             "</footer></main></body></html>")
+    return "".join(o)

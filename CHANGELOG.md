@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.6.0 — enterprise tranche 1
+
+- **Policy file** `.bbharden.toml`: `fail_on`, `only`/`skip`, severity overrides, custom regex rules. `--config`, `--no-config`.
+- **IaC scanner:** Kubernetes, Docker Compose, Terraform.
+- **`sbom` command:** CycloneDX 1.5, validated against the official schema; optional OSV vulnerabilities; reproducible via `SOURCE_DATE_EPOCH`.
+- **HTML report** (`--format html`): self-contained, no scripts, strict CSP, escaped untrusted text.
+- **Compliance references** in JSON/SARIF/HTML (indicative only, never a compliance claim).
+- Fix: `HYGIENE_GITIGNORE_SECRETS` was missing a mapping (caught by a new completeness test).
+
 ## 0.5.2 — calibration from real-world scans
 
 Measured by scanning 15 public repositories (ripgrep, fzf, neovim, axios, lodash, black, ...)
