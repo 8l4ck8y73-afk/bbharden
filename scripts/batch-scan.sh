@@ -80,7 +80,7 @@ while IFS= read -r line || [ -n "$line" ]; do
   args=(scan "$dir" --format json --output "$OUT/json/$name.json")
   [ "$OSV" = 1 ] && args+=(--osv)
   echo "scan   $name"
-  "${BB[@]}" "${args[@]}" >/dev/null 2>>"$OUT/errors.log"
+  "${BB[@]}" "${args[@]}" --no-config >/dev/null 2>>"$OUT/errors.log"
   rc=$?
   # 0 = clean, 1 = findings at --fail-on (not used here), 2 = tool error
   if [ "$rc" -ge 2 ] || [ ! -s "$OUT/json/$name.json" ]; then

@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 from typing import List
 
-from . import __version__, pin as pin_mod, report, suppress
+from . import __version__, config as config_mod, pin as pin_mod, report, sbom as sbom_mod, suppress
 from .context import RepoContext
 from .findings import Finding, Severity
 from .remediate import apply as apply_fixes
@@ -31,7 +31,31 @@ def _resolve_email(args):
     return email or None
 
 
-def _run_scan(ctx: RepoContext, only, skip, baseline=None) -> List[Finding]:
+def _load_config(args, root: Path):
+    """Policy from --config / <root>/.bbharden.toml (or defaults). Exits 2 on error."""
+    from .scanners import ALL_SCANNERS
+    try:
+        cfg = config_mod.load(
+            root, getattr(args, "config", None), getattr(args, "no_config", False),
+            known_scanners={n for n, _ in ALL_SCANNERS})
+    except config_mod.ConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        raise SystemExit(2)
+    if cfg.path:
+        # Announced, because a repo under audit controls its own policy file.
+        print(f"note: using policy {cfg.path} (--no-config to ignore)", file=sys.stderr)
+    return cfg
+
+
+def _make_context(args, root: Path, cfg, **extra) -> RepoContext:
+    return RepoContext(
+        root=root, exclude=list(args.exclude) + cfg.exclude,
+        security_email=_resolve_email(args),
+        scan_tests=bool(args.scan_tests or cfg.scan_tests),
+        custom_rules=cfg.custom_rules, **extra)
+
+
+def _run_scan(ctx: RepoContext, only, skip, baseline=None, cfg=None) -> List[Finding]:
     findings: List[Finding] = []
     for _name, fn in enabled_scanners(only, skip):
         try:
@@ -41,6 +65,8 @@ def _run_scan(ctx: RepoContext, only, skip, baseline=None) -> List[Finding]:
             # "clean", so the CLI exits non-zero instead of letting a gate pass.
             ctx.errors.append(f"scanner '{_name}' failed: {exc}")
             print(f"error: scanner '{_name}' failed: {exc}", file=sys.stderr)
+    if cfg is not None:
+        findings = config_mod.apply_overrides(findings, cfg)
     findings, counts = suppress.apply(ctx, findings, baseline)
     if counts["inline"] or counts["baseline"]:
         # stderr, so machine-readable stdout stays clean.
@@ -59,11 +85,12 @@ def cmd_scan(args) -> int:
     if not root.is_dir():
         print(f"error: target is not a directory: {root}", file=sys.stderr)
         return 2
-    ctx = RepoContext(root=root, use_osv=args.osv, exclude=args.exclude,
-                      security_email=_resolve_email(args),
-                      scan_tests=args.scan_tests)
+    cfg = _load_config(args, root)
+    ctx = _make_context(args, root, cfg, use_osv=args.osv)
     baseline = suppress.load_baseline(args.baseline) if args.baseline else None
-    findings = _run_scan(ctx, args.only, args.skip, baseline)
+    findings = _run_scan(ctx, args.only or cfg.only, args.skip or cfg.skip,
+                         baseline, cfg)
+    fail_on = args.fail_on or cfg.fail_on
     if args.write_baseline:
         n = suppress.write_baseline(args.write_baseline, findings)
         print(f"wrote baseline with {n} finding(s) to {args.write_baseline}",
@@ -80,6 +107,7 @@ def cmd_scan(args) -> int:
         "markdown": report.markdown,
         "sarif": report.sarif,
         "json": report.as_json,
+        "html": report.html_report,
     }[fmt](findings, str(root))
 
     if args.output:
@@ -99,7 +127,7 @@ def cmd_scan(args) -> int:
         print("error: --osv-required was set but CVE lookup did not complete.",
               file=sys.stderr)
         return 2
-    if args.fail_on and _threshold_hit(findings, args.fail_on):
+    if fail_on and _threshold_hit(findings, fail_on):
         return 1
     return 0
 
@@ -109,11 +137,11 @@ def cmd_fix(args) -> int:
     if not root.is_dir():
         print(f"error: target is not a directory: {root}", file=sys.stderr)
         return 2
-    ctx = RepoContext(root=root, exclude=args.exclude,
-                      security_email=_resolve_email(args),
-                      scan_tests=args.scan_tests)
+    cfg = _load_config(args, root)
+    ctx = _make_context(args, root, cfg)
     baseline = suppress.load_baseline(args.baseline) if args.baseline else None
-    findings = _run_scan(ctx, args.only, args.skip, baseline)
+    findings = _run_scan(ctx, args.only or cfg.only, args.skip or cfg.skip,
+                         baseline, cfg)
     actions = apply_fixes(root, findings, dry_run=args.dry_run)
 
     pins = []
@@ -193,6 +221,37 @@ def _fix_summary_md(actions, findings, pins=()) -> str:
     return "\n".join(lines) + "\n"
 
 
+def cmd_sbom(args) -> int:
+    root = Path(args.target).resolve()
+    if not root.is_dir():
+        print(f"error: target is not a directory: {root}", file=sys.stderr)
+        return 2
+    cfg = _load_config(args, root)
+    ctx = _make_context(args, root, cfg)
+    vulns = None
+    if args.osv:
+        from . import osv as osv_mod
+        from .scanners.dependencies import _collect_packages
+        try:
+            vulns = osv_mod.query(list(_collect_packages(ctx)))
+        except osv_mod.OSVUnavailable as exc:
+            print(f"note: CVE lookup skipped (could not reach api.osv.dev: {exc}); "
+                  "the SBOM has no vulnerabilities section.", file=sys.stderr)
+            if args.osv_required:
+                return 2
+    doc = sbom_mod.build(ctx, vulns)
+    rendered = sbom_mod.render(doc)
+    if args.output:
+        Path(args.output).write_text(rendered, encoding="utf-8")
+        print(f"wrote CycloneDX SBOM ({len(doc['components'])} components) to {args.output}")
+    else:
+        print(rendered, end="")
+    if not doc["components"]:
+        print("note: no exact-version dependencies found (commit a lockfile for a "
+              "complete SBOM).", file=sys.stderr)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="bbharden",
@@ -219,12 +278,17 @@ def build_parser() -> argparse.ArgumentParser:
     common.add_argument("--scan-tests", action="store_true",
                         help="also scan test/fixture/example paths for secrets "
                              "(skipped by default; they usually hold fake keys)")
+    common.add_argument("--config", metavar="FILE",
+                        help="policy file (default: ./.bbharden.toml if present)")
+    common.add_argument("--no-config", action="store_true",
+                        help="ignore any .bbharden.toml (use when auditing a "
+                             "repository you do not own)")
     common.add_argument("--exclude", action="append", default=[], metavar="GLOB",
                         help="leave paths out of the scan (repeatable), e.g. "
                              "--exclude examples --exclude 'docs/*.md'")
 
     s = sub.add_parser("scan", parents=[common], help="scan and report")
-    s.add_argument("--format", choices=["console", "markdown", "sarif", "json"],
+    s.add_argument("--format", choices=["console", "markdown", "sarif", "json", "html"],
                    default="console")
     s.add_argument("--output", "-o", help="write the report to a file")
     s.add_argument("--fail-on", choices=_SEV_ORDER, default=None,
@@ -239,6 +303,15 @@ def build_parser() -> argparse.ArgumentParser:
                    help="record today's findings as accepted and exit 0; later "
                         "runs with --baseline FILE then fail only on NEW findings")
     s.set_defaults(func=cmd_scan)
+
+    b = sub.add_parser("sbom", parents=[common],
+                       help="write a CycloneDX 1.5 SBOM (JSON)")
+    b.add_argument("--output", "-o", help="write the SBOM to a file (default: stdout)")
+    b.add_argument("--osv", action="store_true",
+                   help="add a vulnerabilities section from OSV.dev (needs network)")
+    b.add_argument("--osv-required", action="store_true",
+                   help="with --osv: exit 2 if the lookup could not complete")
+    b.set_defaults(func=cmd_sbom)
 
     f = sub.add_parser("fix", parents=[common],
                        help="apply machine-applicable fixes")

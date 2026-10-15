@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.6.0 — enterprise tranche 1
+
+- **Policy file** `.bbharden.toml`: `fail_on`, `only`/`skip`, severity overrides, custom regex rules. `--config`, `--no-config`.
+- **IaC scanner:** Kubernetes, Docker Compose, Terraform.
+- **`sbom` command:** CycloneDX 1.5, validated against the official schema; optional OSV vulnerabilities; reproducible via `SOURCE_DATE_EPOCH`.
+- **HTML report** (`--format html`): self-contained, no scripts, strict CSP, escaped untrusted text.
+- **Compliance references** in JSON/SARIF/HTML (indicative only, never a compliance claim).
+- Fix: `HYGIENE_GITIGNORE_SECRETS` was missing a mapping (caught by a new completeness test).
+
+## 0.5.2 — calibration from real-world scans
+
+Measured by scanning 15 public repositories (ripgrep, fzf, neovim, axios, lodash, black, ...)
+and 4 private ones. Findings per repo before -> after for the affected rules:
+
+- **False positive fixed:** `SECRET_OPENAI` matched SSH security-key algorithm names such as
+  `sk-ssh-ed25519-cert-v01@openssh.com` (4 "high" findings in neovim, all false). The rule now
+  only matches real key shapes: `sk-ant-...`, `sk-proj-/svcacct-/admin-...`, and legacy
+  `sk-` + 32+ alphanumerics, each with an entropy check.
+- `CI_ACTION_UNPINNED` is LOW for GitHub-owned actions (`actions/*`, `github/*`) and stays
+  MEDIUM for third-party actions. neovim: 49 medium -> 0; 130 medium across the sample were
+  mostly first-party.
+- `DEP_UNPINNED_NPM` is INFO when a lockfile (`package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`,
+  ...) sits next to the `package.json`, because the lockfile fixes the installed version.
+  axios: 50 low -> 50 info.
+- Not changed on purpose: `DOCKER_RUNS_AS_ROOT` stays HIGH. In build-only images (e.g.
+  shellcheck's `builders/`) it is lower risk; that needs human judgment and is documented.
+- 7 new regression tests.
+
 ## 0.5.1 — security & correctness audit
 
 **Security hardening**

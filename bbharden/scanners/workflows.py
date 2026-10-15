@@ -15,6 +15,9 @@ from ..findings import Finding, Severity
 _USES = re.compile(r"""^\s*-?\s*uses:\s*['"]?([^\s#'"]+)""")
 _SHA_REF = re.compile(r"@[0-9a-f]{40}$")
 _LOCAL_OR_DOCKER = re.compile(r"^(\./|docker://)")
+# Actions published by GitHub itself. Still worth pinning, but a compromise of
+# these is a platform-level event, so they rate below third-party actions.
+_FIRST_PARTY = re.compile(r"^(actions|github)/")
 
 # Expressions an outside contributor controls. Used inside a shell/script body
 # they are expanded BEFORE the shell parses the line -> command injection.
@@ -104,10 +107,13 @@ def scan(ctx) -> Iterator[Finding]:
                 continue
             if "@" in ref:
                 if not _SHA_REF.search(ref):
+                    first_party = bool(_FIRST_PARTY.match(ref))
                     yield Finding(
                         rule_id="CI_ACTION_UNPINNED",
-                        title="Third-party action not pinned to a commit SHA",
-                        severity=Severity.MEDIUM,
+                        title=("GitHub-owned action not pinned to a commit SHA"
+                               if first_party else
+                               "Third-party action not pinned to a commit SHA"),
+                        severity=Severity.LOW if first_party else Severity.MEDIUM,
                         file=name, line=i,
                         message=f"`{ref}` is referenced by a mutable tag/branch. "
                                 "A compromised tag can run arbitrary code with "

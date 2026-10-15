@@ -94,6 +94,14 @@ def _load_json(ctx, path):
     return data if isinstance(data, dict) else None
 
 
+_NPM_LOCKFILES = ("package-lock.json", "npm-shrinkwrap.json", "yarn.lock",
+                  "pnpm-lock.yaml", "bun.lockb", "bun.lock")
+
+
+def _has_npm_lockfile(path) -> bool:
+    return any((path.parent / n).is_file() for n in _NPM_LOCKFILES)
+
+
 def _npm_is_unpinned(spec: str) -> bool:
     s = spec.strip()
     if not s or _NPM_NON_REGISTRY.match(s):
@@ -106,6 +114,7 @@ def _scan_package_json(ctx, path) -> Iterator[Finding]:
     data = _load_json(ctx, path)
     if data is None:
         return
+    locked = _has_npm_lockfile(path)
     for section in ("dependencies", "devDependencies", "optionalDependencies"):
         deps = data.get(section) or {}
         if not isinstance(deps, dict):
@@ -114,10 +123,15 @@ def _scan_package_json(ctx, path) -> Iterator[Finding]:
             if isinstance(spec, str) and _npm_is_unpinned(spec):
                 yield Finding(
                     rule_id="DEP_UNPINNED_NPM",
-                    title="Unpinned npm dependency",
-                    severity=Severity.LOW,
+                    title=("npm range (resolved by the committed lockfile)" if locked
+                           else "Unpinned npm dependency"),
+                    # With a lockfile the range is only a declaration of intent: the
+                    # installed version is fixed. Report it, but as information.
+                    severity=Severity.INFO if locked else Severity.LOW,
                     file=name, line=1,
-                    message=f"`{dep}` uses the mutable range `{spec}` in {section}.",
+                    message=f"`{dep}` uses the range `{spec}` in {section}"
+                            + (" (a committed lockfile fixes the installed version)."
+                               if locked else "."),
                     remediation="Pin exact versions and commit a lockfile "
                                 "(package-lock.json / pnpm-lock.yaml); enable "
                                 "Dependabot for controlled upgrades.",
