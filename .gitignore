@@ -24,3 +24,6 @@ id_rsa
 *.pfx
 credentials.json
 *.keystore
+
+# batch-scan output (legacy default location)
+bbharden-batch-*/

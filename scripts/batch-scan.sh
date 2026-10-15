@@ -11,7 +11,7 @@
 # repos.txt: one entry per line, either a GitHub URL or a local directory.
 # Lines starting with '#' and blank lines are ignored.
 #
-# Output (default ./bbharden-batch-<date>/):
+# Output (default ~/bbharden-reports/batch-<date>/, outside any repo):
 #   summary.md    per-repo severity counts + most frequent rules
 #   review.tsv    one row per finding; fill the 'verdict' column with TP or FP
 #   json/<repo>.json   raw bbharden output
@@ -31,7 +31,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ -n "$LIST" ] && [ -f "$LIST" ] || { echo "usage: $0 [-o DIR] [--osv] repos.txt" >&2; exit 2; }
-OUT="${OUT:-./bbharden-batch-$(date +%Y%m%d-%H%M%S)}"
+OUT="${OUT:-${HOME:-.}/bbharden-reports/batch-$(date +%Y%m%d-%H%M%S)}"   # outside any repo, so later scans do not re-scan old output
 
 command -v python3 >/dev/null 2>&1 || { echo "python3 not found (Termux: pkg install python)" >&2; exit 2; }
 
