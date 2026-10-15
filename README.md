@@ -79,11 +79,13 @@ Summary: 🟥 2 critical  🟧 6 high  🟨 4 medium  🟦 4 low  ⬜ 1 info
 | **dependencies** | unpinned pip / npm versions, npm install-time lifecycle scripts |
 | **security-files** | missing `SECURITY.md`, missing Dependabot, committed `.env`, weak `.gitignore` — **all auto-fixable** |
 
-Run a subset:
+Run a subset, or leave paths out (repeatable; a bare directory name excludes
+everything beneath it):
 
 ```bash
 bbharden scan . --only secrets dockerfile
 bbharden scan . --skip dependencies
+bbharden scan . --exclude examples --exclude 'docs/*.md'
 ```
 
 ## 🧬 Known-CVE matching (`--osv`)

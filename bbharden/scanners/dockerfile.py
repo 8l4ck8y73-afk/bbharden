@@ -8,10 +8,29 @@ from typing import Iterator
 from ..findings import Finding, Severity
 
 
+# `dockerfile.py`, `dockerfile.md`, ... are source/docs ABOUT Dockerfiles, not
+# Dockerfiles. Real variants look like `Dockerfile`, `Dockerfile.prod`,
+# `Dockerfile.dev`, or `app.dockerfile`.
+_NOT_DOCKERFILE_EXT = {
+    "py", "pyc", "md", "txt", "rst", "js", "ts", "json", "yml", "yaml",
+    "toml", "cfg", "ini", "sh", "go", "rs", "java", "html", "xml", "lock",
+}
+
+
+def _is_dockerfile(name: str) -> bool:
+    base = name.lower()
+    if base == "dockerfile":
+        return True
+    if base.endswith(".dockerfile"):
+        return True
+    if base.startswith("dockerfile."):
+        return base.rsplit(".", 1)[-1] not in _NOT_DOCKERFILE_EXT
+    return False
+
+
 def _dockerfiles(ctx):
     for p in ctx.text_files():
-        base = p.name.lower()
-        if base == "dockerfile" or base.startswith("dockerfile."):
+        if _is_dockerfile(p.name):
             yield p
 
 

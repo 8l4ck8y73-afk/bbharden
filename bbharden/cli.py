@@ -36,7 +36,7 @@ def cmd_scan(args) -> int:
     if not root.exists():
         print(f"error: target not found: {root}", file=sys.stderr)
         return 2
-    ctx = RepoContext(root=root, use_osv=args.osv)
+    ctx = RepoContext(root=root, use_osv=args.osv, exclude=args.exclude)
     findings = _run_scan(ctx, args.only, args.skip)
     # Non-fatal notes (e.g. OSV unreachable) go to stderr so they never corrupt
     # machine-readable output on stdout (SARIF / JSON).
@@ -67,7 +67,7 @@ def cmd_scan(args) -> int:
 
 def cmd_fix(args) -> int:
     root = Path(args.target).resolve()
-    ctx = RepoContext(root=root)
+    ctx = RepoContext(root=root, exclude=args.exclude)
     findings = _run_scan(ctx, args.only, args.skip)
     actions = apply_fixes(root, findings, dry_run=args.dry_run)
 
@@ -133,6 +133,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="run only these scanners")
     common.add_argument("--skip", nargs="*", metavar="SCANNER",
                         help="skip these scanners")
+    common.add_argument("--exclude", action="append", default=[], metavar="GLOB",
+                        help="leave paths out of the scan (repeatable), e.g. "
+                             "--exclude examples --exclude 'docs/*.md'")
 
     s = sub.add_parser("scan", parents=[common], help="scan and report")
     s.add_argument("--format", choices=["console", "markdown", "sarif", "json"],
