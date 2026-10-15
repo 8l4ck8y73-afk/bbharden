@@ -71,11 +71,26 @@ class TestWorkflows(unittest.TestCase):
 
 
 class TestAutofix(unittest.TestCase):
-    def test_dry_run_plans_security_md(self):
-        findings = list(security_files.scan(_ctx(EXAMPLE)))
+    def test_dry_run_plans_security_md_when_email_given(self):
+        ctx = RepoContext(root=EXAMPLE, security_email="sec@corp.test")
+        findings = list(security_files.scan(ctx))
         actions = remediate.apply(EXAMPLE, findings, dry_run=True)
         paths = {p for p, _ in actions}
         self.assertIn("SECURITY.md", paths)
+        md = next(f for f in findings if f.rule_id == "HYGIENE_NO_SECURITY_MD")
+        self.assertIn("sec@corp.test", md.fix_content)
+        self.assertNotIn("example.com", md.fix_content)
+
+    def test_never_invents_a_contact_email(self):
+        # Regression: a fake placeholder contact in a published policy is worse
+        # than no policy, so without an email there must be NO autofix.
+        findings = list(security_files.scan(_ctx(EXAMPLE)))
+        md = next(f for f in findings if f.rule_id == "HYGIENE_NO_SECURITY_MD")
+        self.assertFalse(md.has_autofix)
+        self.assertIn("--security-email", md.remediation)
+        paths = {p for p, _ in remediate.apply(EXAMPLE, findings, dry_run=True)}
+        self.assertNotIn("SECURITY.md", paths)
+        self.assertIn(".github/dependabot.yml", paths)  # other fixes unaffected
 
 
 class TestDockerfileDetection(unittest.TestCase):
