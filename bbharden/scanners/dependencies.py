@@ -155,6 +155,31 @@ def _scan_package_json(ctx, path) -> Iterator[Finding]:
                 )
 
 
+_DEV_REQ = re.compile(r"(?i)(^|/)requirements[-_.]?(dev|test|tests|testing|lint|docs?|ci)\b"
+                      r"|(^|/)requirements/(dev|test|tests|testing|lint|docs?|ci)[^/]*\.txt$")
+
+
+class PkgMap(dict):
+    """{(eco, name, version): (file, line)} plus which packages are dev-only.
+
+    A package is dev-only when every place it was found marks it as a
+    development/test dependency (devDependencies, lockfile `dev: true`,
+    Pipfile `develop`, Maven `<scope>test</scope>`, requirements-dev.txt…).
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.prod = set()
+
+    def add(self, key, loc, dev: bool = False) -> None:
+        self.setdefault(key, loc)
+        if not dev:
+            self.prod.add(key)
+
+    def dev_only(self, key) -> bool:
+        return key in self and key not in self.prod
+
+
 def _collect_packages(ctx):
     """Exact-version packages we can match against OSV.
 
@@ -166,14 +191,14 @@ def _collect_packages(ctx):
     package-lock.json, Pipfile.lock, poetry.lock — which expose the TRANSITIVE
     dependencies that actually ship.
     """
-    found = {}
+    found = PkgMap()
     for p in _requirement_files(ctx):
         text = ctx.read_text(p) or ""
         for i, raw in enumerate(text.splitlines(), start=1):
             parsed = _parse_requirement(raw)
             if parsed and parsed[1] and not parsed[1].endswith("."):
-                found.setdefault(("PyPI", _pep503(parsed[0]), parsed[1]),
-                                 (ctx.rel(p), i))
+                found.add(("PyPI", _pep503(parsed[0]), parsed[1]),
+                          (ctx.rel(p), i), dev=_DEV_REQ.search(ctx.rel(p)) is not None)
 
     for p in ctx.glob("**/package.json"):
         data = _load_json(ctx, p)
@@ -185,8 +210,8 @@ def _collect_packages(ctx):
                 continue
             for dep, spec in deps.items():
                 if isinstance(spec, str) and _NPM_EXACT.match(spec.strip()):
-                    found.setdefault(("npm", dep, spec.strip().lstrip("=v")),
-                                     (ctx.rel(p), 1))
+                    found.add(("npm", dep, spec.strip().lstrip("=v")),
+                              (ctx.rel(p), 1), dev=section == "devDependencies")
 
     for p in ctx.glob("**/package-lock.json"):
         data = _load_json(ctx, p)
@@ -198,7 +223,8 @@ def _collect_packages(ctx):
                 name = meta.get("name") or key.rsplit("node_modules/", 1)[-1]
                 ver = meta.get("version")
                 if isinstance(ver, str) and _NPM_EXACT.match(ver):
-                    found.setdefault(("npm", name, ver), (ctx.rel(p), 1))
+                    found.add(("npm", name, ver), (ctx.rel(p), 1),
+                              dev=bool(meta.get("dev") or meta.get("devOptional")))
         elif isinstance((data or {}).get("dependencies"), dict):   # v1
             stack = [(data["dependencies"])]
             while stack:
@@ -207,7 +233,8 @@ def _collect_packages(ctx):
                         continue
                     ver = meta.get("version")
                     if isinstance(ver, str) and _NPM_EXACT.match(ver):
-                        found.setdefault(("npm", name, ver), (ctx.rel(p), 1))
+                        found.add(("npm", name, ver), (ctx.rel(p), 1),
+                                  dev=bool(meta.get("dev")))
                     if isinstance(meta.get("dependencies"), dict):
                         stack.append(meta["dependencies"])
 
@@ -220,8 +247,8 @@ def _collect_packages(ctx):
             for name, meta in sec.items():
                 ver = meta.get("version", "") if isinstance(meta, dict) else ""
                 if isinstance(ver, str) and ver.startswith("=="):
-                    found.setdefault(("PyPI", _pep503(name), ver[2:]),
-                                     (ctx.rel(p), 1))
+                    found.add(("PyPI", _pep503(name), ver[2:]),
+                              (ctx.rel(p), 1), dev=section == "develop")
 
     for p in ctx.glob("**/poetry.lock"):
         text = ctx.read_text(p) or ""
@@ -229,8 +256,9 @@ def _collect_packages(ctx):
             nm = re.search(r'^name\s*=\s*"([^"]+)"', block, re.M)
             vr = re.search(r'^version\s*=\s*"([^"]+)"', block, re.M)
             if nm and vr:
-                found.setdefault(("PyPI", _pep503(nm.group(1)), vr.group(1)),
-                                 (ctx.rel(p), 1))
+                cat = re.search(r'^category\s*=\s*"([^"]+)"', block, re.M)
+                found.add(("PyPI", _pep503(nm.group(1)), vr.group(1)),
+                          (ctx.rel(p), 1), dev=bool(cat and cat.group(1) == "dev"))
     _collect_other_ecosystems(ctx, found)
     return found
 
@@ -275,7 +303,7 @@ def _collect_other_ecosystems(ctx, found) -> None:
                 continue
             m = _GO_REQ.match(raw)
             if m:
-                found.setdefault(("Go", m.group("mod"), m.group("ver")), (ctx.rel(p), i))
+                found.add(("Go", m.group("mod"), m.group("ver")), (ctx.rel(p), i))
 
     for p in ctx.glob("**/Cargo.lock"):
         for block in (ctx.read_text(p) or "").split("[[package]]")[1:]:
@@ -284,7 +312,7 @@ def _collect_other_ecosystems(ctx, found) -> None:
             src = re.search(r'^source\s*=\s*"([^"]+)"', block, re.M)
             # Only registry crates; path/git dependencies have no registry identity.
             if nm and vr and src and src.group(1).startswith("registry+"):
-                found.setdefault(("crates.io", nm.group(1), vr.group(1)), (ctx.rel(p), 1))
+                found.add(("crates.io", nm.group(1), vr.group(1)), (ctx.rel(p), 1))
 
     for p in ctx.glob("**/pom.xml"):
         text = re.sub(r"<!--.*?-->", "", ctx.read_text(p) or "", flags=re.S)
@@ -292,8 +320,9 @@ def _collect_other_ecosystems(ctx, found) -> None:
             g, a, v = _MVN_G.search(d), _MVN_A.search(d), _MVN_V.search(d)
             # Property references (${x}) and ranges ([1,2)) are not concrete versions.
             if g and a and v and re.fullmatch(r"\d[0-9A-Za-z._\-]*", v.group(1)):
-                found.setdefault(("Maven", f"{g.group(1)}:{a.group(1)}", v.group(1)),
-                                 (ctx.rel(p), 1))
+                sc = re.search(r"<scope>\s*([a-z]+)\s*</scope>", d)
+                found.add(("Maven", f"{g.group(1)}:{a.group(1)}", v.group(1)),
+                          (ctx.rel(p), 1), dev=bool(sc and sc.group(1) == "test"))
 
     for p in ctx.glob("**/Gemfile.lock"):
         specs = False
@@ -305,7 +334,7 @@ def _collect_other_ecosystems(ctx, found) -> None:
                 specs = False
             m = _GEM_SPEC.match(raw) if specs else None
             if m:
-                found.setdefault(("RubyGems", m.group("n"), m.group("v")), (ctx.rel(p), i))
+                found.add(("RubyGems", m.group("n"), m.group("v")), (ctx.rel(p), i))
 
     for p in ctx.glob("**/composer.lock"):
         data = _load_json(ctx, p) or {}
@@ -317,7 +346,8 @@ def _collect_other_ecosystems(ctx, found) -> None:
                 if isinstance(n, str) and isinstance(v, str):
                     v = v[1:] if v.startswith("v") else v
                     if re.fullmatch(r"\d[0-9A-Za-z.\-+]*", v):
-                        found.setdefault(("Packagist", n, v), (ctx.rel(p), 1))
+                        found.add(("Packagist", n, v), (ctx.rel(p), 1),
+                                  dev=section == "packages-dev")
 
 
 def _scan_osv(ctx) -> Iterator[Finding]:
@@ -343,9 +373,26 @@ def _scan_osv(ctx) -> Iterator[Finding]:
         eco, name, version = pkg
         file, line = packages[pkg]
         if len(vulns) == 1 or getattr(ctx, "osv_detail", False):
-            yield from _per_advisory(eco, name, version, file, line, vulns)
+            out = list(_per_advisory(eco, name, version, file, line, vulns))
         else:
-            yield _grouped(eco, name, version, file, line, vulns)
+            out = [_grouped(eco, name, version, file, line, vulns)]
+        dev = getattr(packages, "dev_only", lambda k: False)(pkg)
+        for f in out:
+            yield _as_dev(f) if dev else f
+
+
+_ONE_DOWN = {Severity.CRITICAL: Severity.HIGH, Severity.HIGH: Severity.MEDIUM,
+             Severity.MEDIUM: Severity.LOW, Severity.LOW: Severity.LOW,
+             Severity.INFO: Severity.INFO}
+
+
+def _as_dev(f: Finding) -> Finding:
+    """Dev/test-only dependencies do not ship to users: still real, one level lower."""
+    import dataclasses
+    return dataclasses.replace(
+        f, severity=_ONE_DOWN[f.severity], title=f"{f.title} [dev dependency]",
+        message=f.message + " Development/test-only dependency (not shipped), so the "
+                "severity is lowered one level; it still runs on developer and CI machines.")
 
 
 def _best_fix(vulns):

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.8.3 — context-aware severity (from the 12-repo live batch)
+
+Batch of 12 public repos with live `--osv` (397 findings). Two patterns inflated severity:
+
+- **Dev-only dependencies:** lodash showed 15 critical / 30 high CVEs, all in its 602 lockfile packages, every one a dev/test tool (lodash has no runtime deps). Packages marked dev-only everywhere they appear (`devDependencies`, lockfile `dev`/`devOptional`, Pipfile `develop`, poetry `category = "dev"`, Maven `<scope>test</scope>`, `requirements-dev/test/docs/ci.txt`) now get `[dev dependency]` and one severity level lower. Still reported: they run on developer and CI machines.
+- **Build/test Docker images:** `DOCKER_RUNS_AS_ROOT` is MEDIUM (not HIGH) for Dockerfiles under `test/`, `testing/`, `ci/`, `builders/`, `.devcontainer/`, etc., or named `Dockerfile.dev/test/ci/build`. Verified on shellcheck (7 builder images → medium, root image stays high) and pre-commit.
+
 ## 0.8.2 — one finding per vulnerable package
 
 - `--osv` now reports **one finding per package** ("django 4.2.1: 50 known vulnerabilities (4 critical, …)") with the single upgrade that fixes them, instead of one line per advisory. Severity is the worst advisory. The full list is kept in JSON (`details`) and shown as a table in the HTML report.
