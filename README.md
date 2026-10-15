@@ -86,6 +86,31 @@ bbharden scan . --only secrets dockerfile
 bbharden scan . --skip dependencies
 ```
 
+## 🧬 Known-CVE matching (`--osv`)
+
+Turn "unpinned dependency" into "this exact version has CVE-XXXX":
+
+```bash
+bbharden scan . --osv
+```
+
+```
+🟧 HIGH     DEP_KNOWN_VULN
+   Known vulnerability in demo-lib 2.0.0 (CVE-2099-0001)
+   requirements.txt:1
+   → Upgrade `demo-lib` to 2.5.1 or later.
+```
+
+- **Opt-in**, because it needs network access to [OSV.dev](https://osv.dev).
+- **Privacy:** only package names and versions are sent — never source code,
+  file paths or repository names.
+- **No guessing:** only exact pins (`==1.2.3`, `"1.2.3"`) are matched. Ranges like
+  `>=1.0` or `^1.2` are reported as unpinned instead of being matched to a
+  made-up version.
+- **Fails soft:** if OSV is unreachable the scan completes normally and prints a
+  note to stderr (so SARIF/JSON on stdout stays valid).
+- Covers PyPI (`requirements*.txt`) and npm (`package.json`) today.
+
 ## 🔧 Auto-fix
 
 ```bash
@@ -174,7 +199,8 @@ bbharden scan . --fail-on high   # exit code 1 if high+ findings exist
 ## Roadmap
 
 - [x] Auto-open hardening PRs (GitHub Action)
-- [ ] Live CVE matching via optional `osv-scanner` / `pip-audit` hook
+- [x] Live CVE matching via OSV.dev (`--osv`)
+- [ ] Lockfile support (`package-lock.json`, `poetry.lock`, `Pipfile.lock`) for transitive CVEs
 - [ ] Terraform / Kubernetes manifest hardening
 - [ ] Custom rule packs (`.bbharden.yml`)
 - [ ] Baseline file to suppress accepted findings
