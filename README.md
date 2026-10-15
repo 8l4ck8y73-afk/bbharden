@@ -250,6 +250,21 @@ Gate your pipeline:
 bbharden scan . --fail-on high   # exit code 1 if high+ findings exist
 ```
 
+## 📱 Batch scan (Termux / Linux)
+
+Scan many repositories at once and get a sheet to mark true/false positives:
+
+```bash
+pkg install -y git python        # Termux, once
+./scripts/batch-scan.sh repos.txt            # one GitHub URL or folder per line
+./scripts/batch-scan.sh --osv -o ~/results repos.txt
+```
+
+Produces `summary.md` (counts per repo and the most frequent rules) and
+`review.tsv` (one row per finding; fill the `verdict` column with TP/FP). Repos are
+cloned shallow with git hooks disabled. Use it to measure false positives on real
+code before relying on a rule.
+
 ## 🔒 Exit codes & security model
 
 | Code | Meaning |
